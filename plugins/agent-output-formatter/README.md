@@ -2,7 +2,7 @@
 
 One Claude Code plugin, **aof**. aof adds a session toggle for an evidence-bound output contract, an auto-start switch and an optional HTML sub-mode.
 
-Background material lives in `local/aof/Karpathy-ASD-STE100/` at the repository root (git-ignored, not part of the plugin). aof borrows ideas from the 《中文技术表达规范》 (C01–C24) and carlstack's "中文技術寫作借用 STE". It does **not** implement or claim ASD-STE100 compliance, and it has no sentence-length lint or word lists.
+Background material lives in `local/agent-output-formatter/Karpathy-ASD-STE100/` at the repository root (git-ignored, not part of the plugin). aof borrows ideas from the 《中文技术表达规范》 (C01–C24) and carlstack's "中文技術寫作借用 STE". It does **not** implement or claim ASD-STE100 compliance, and it has no sentence-length lint or word lists.
 
 The contract is an untested rule draft until the comparison evaluation below has been run.
 
@@ -11,7 +11,7 @@ The contract is an untested rule draft until the comparison evaluation below has
 aof is a skills-directory plugin: any folder under `~/.claude/skills/` with a `.claude-plugin/plugin.json` loads as a plugin in every session, with no install step. Link it in:
 
 ```
-ln -s ~/Codes/xqpmjh/plugins/plugins/aof ~/.claude/skills/aof
+ln -s ~/Codes/xqpmjh/plugins/plugins/agent-output-formatter ~/.claude/skills/aof
 ```
 
 Start a new session (or run `/reload-plugins`) so the hooks load. `claude plugin list` should show `aof@skills-dir` as loaded. Edits to this directory take effect at the next session start or `/reload-plugins`.

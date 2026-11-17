@@ -5,13 +5,13 @@ Claude Code plugins by [xqpmjh](https://github.com/xqpmjh), one directory per pl
 | Plugin | What it does | Status |
 | :--- | :--- | :--- |
 | [`prompt-history-bar`](plugins/prompt-history-bar/) | Right-side column of recent prompts in the Claude Code status line | Has its own installer and skill-hub package |
-| [`aof`](plugins/aof/) | Per-session toggle for an evidence-bound output contract, with an HTML sub-mode | Kept, not installed (see its `CLAUDE.md`) |
+| [`aof`](plugins/agent-output-formatter/) | Per-session toggle for an evidence-bound output contract, with an HTML sub-mode | Kept, not installed (see its `CLAUDE.md`) |
 
 ## Layout
 
 ```
 .claude-plugin/marketplace.json   marketplace listing every plugin below
-plugins/<name>/                   one plugin: .claude-plugin/plugin.json, its own README.md and CLAUDE.md, tests
+plugins/<dir>/                    one plugin: .claude-plugin/plugin.json, its own README.md and CLAUDE.md, tests (directory name may differ from the plugin name)
 ```
 
 Each plugin directory is self-contained. Read its `README.md` for install and use, and its `CLAUDE.md` for development rules and test commands. Run its tests from inside that directory.

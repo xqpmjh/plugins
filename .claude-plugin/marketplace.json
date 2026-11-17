@@ -20,7 +20,7 @@
     },
     {
       "name": "aof",
-      "source": "./plugins/aof",
+      "source": "./plugins/agent-output-formatter",
       "description": "Session toggle for an evidence-bound output contract (Chinese/English technical writing), with an auto-start switch and an optional HTML sub-mode.",
       "version": "0.1.0",
       "author": {

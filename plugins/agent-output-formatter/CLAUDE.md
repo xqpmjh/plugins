@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-One Claude Code plugin, **aof** (this directory, `plugins/aof/` in the plugins repository): a per-session toggle that injects an evidence-bound output contract for Chinese/English technical writing, with an auto-start switch and an optional HTML sub-mode. It lives in the `xqpmjh/plugins` monorepo; the repository-level rules are in the root `CLAUDE.md`.
+One Claude Code plugin, **aof** (this directory, `plugins/agent-output-formatter/` in the plugins repository): a per-session toggle that injects an evidence-bound output contract for Chinese/English technical writing, with an auto-start switch and an optional HTML sub-mode. It lives in the `xqpmjh/plugins` monorepo; the repository-level rules are in the root `CLAUDE.md`.
 
 Current status (2026-10-09): the plugin is kept but **not installed**. The user chose a thin, non-enforced layer instead, the 「输出格式（软约束）」 subsection under 「中文表达」 in the global `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`. Those two subsections must stay in sync with each other. `rules/contract.md` is the strict layer, kept for later. Do not expand it or push installing aof unless the user asks. If they do, run the comparison eval first (below).
 
-`Karpathy-ASD-STE100/` is downloaded background material (磊叔's 10-rule prompt, the 14-page 《中文技术表达规范》, the ASD-STE100 PDFs and a test report, about 90 MB). It sits in the git-ignored `local/aof/Karpathy-ASD-STE100/` at the repository root, outside the plugin directory so it is not packaged with the plugin. The dated research and evaluation records (formerly `docs/`) are kept locally in `local/aof/docs/`, not tracked, because they quote private instructions and local paths. aof installs as a skills-dir plugin, not from a marketplace.
+`Karpathy-ASD-STE100/` is downloaded background material (磊叔's 10-rule prompt, the 14-page 《中文技术表达规范》, the ASD-STE100 PDFs and a test report, about 90 MB). It sits in the git-ignored `local/agent-output-formatter/Karpathy-ASD-STE100/` at the repository root, outside the plugin directory so it is not packaged with the plugin. The dated research and evaluation records (formerly `docs/`) are kept locally in `local/agent-output-formatter/docs/`, not tracked, because they quote private instructions and local paths. aof installs as a skills-dir plugin, not from a marketplace.
 
 ## Commands
 
@@ -20,7 +20,7 @@ claude plugin validate .
 
 There is no single-test runner. `tests/run.sh` is one linear script whose sections each start with `reset_state`; to iterate on one case, copy the harness header (lines 1–45) plus that section into a scratch script. The suite uses a temporary `AOF_HOME`, so it never touches `~/.claude/aof/`.
 
-Install (user-run; the sandbox cannot write `~/.claude/skills`): `ln -s ~/Codes/xqpmjh/plugins/plugins/aof ~/.claude/skills/aof`, then `/reload-plugins`, then check that `claude plugin list` shows `aof@skills-dir`. Uninstall: `trash ~/.claude/skills/aof`.
+Install (user-run; the sandbox cannot write `~/.claude/skills`): `ln -s ~/Codes/xqpmjh/plugins/plugins/agent-output-formatter ~/.claude/skills/aof`, then `/reload-plugins`, then check that `claude plugin list` shows `aof@skills-dir`. Uninstall: `trash ~/.claude/skills/aof`.
 
 ## Architecture
 
