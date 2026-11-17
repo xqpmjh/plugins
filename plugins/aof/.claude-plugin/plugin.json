@@ -1,0 +1,10 @@
+{
+  "name": "aof",
+  "version": "0.1.0",
+  "description": "Session toggle for an evidence-bound output contract (Chinese/English technical writing), with an auto-start switch and an optional HTML sub-mode.",
+  "author": {
+    "name": "xqpmjh",
+    "url": "https://github.com/xqpmjh"
+  },
+  "license": "MIT"
+}

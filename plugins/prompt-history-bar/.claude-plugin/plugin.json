@@ -1,0 +1,18 @@
+{
+  "name": "prompt-history-bar",
+  "description": "Show recent prompts for the current project in a right-side column of the Claude Code status line. Reads local files only (prompt history and optional paste preview); no network, hooks, or telemetry.",
+  "version": "0.1.1",
+  "author": {
+    "name": "xqpmjh",
+    "url": "https://github.com/xqpmjh"
+  },
+  "homepage": "https://github.com/xqpmjh/plugins/tree/main/plugins/prompt-history-bar",
+  "repository": "https://github.com/xqpmjh/plugins",
+  "icon": "./.claude-plugin/icon.png",
+  "license": "MIT",
+  "keywords": [
+    "statusline",
+    "prompt-history",
+    "productivity"
+  ]
+}

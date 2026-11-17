@@ -1,0 +1,33 @@
+{
+  "name": "xqpmjh-plugins",
+  "description": "Claude Code plugins by xqpmjh.",
+  "owner": {
+    "name": "xqpmjh",
+    "url": "https://github.com/xqpmjh"
+  },
+  "plugins": [
+    {
+      "name": "prompt-history-bar",
+      "source": "./plugins/prompt-history-bar",
+      "description": "Show recent prompts for the current project in a right-side column of the Claude Code status line. Reads local files only (prompt history and optional paste preview); no network, hooks, or telemetry.",
+      "version": "0.1.1",
+      "author": {
+        "name": "xqpmjh",
+        "url": "https://github.com/xqpmjh"
+      },
+      "license": "MIT",
+      "keywords": ["statusline", "prompt-history", "productivity"]
+    },
+    {
+      "name": "aof",
+      "source": "./plugins/aof",
+      "description": "Session toggle for an evidence-bound output contract (Chinese/English technical writing), with an auto-start switch and an optional HTML sub-mode.",
+      "version": "0.1.0",
+      "author": {
+        "name": "xqpmjh",
+        "url": "https://github.com/xqpmjh"
+      },
+      "license": "MIT"
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+[aof] Session state: on. The aof output contract the user enabled earlier in this conversation applies to this reply: evidence boundary, delivery-status split, one-rewrite stop rule, verified side-effect labels.

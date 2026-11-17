@@ -1,0 +1,8 @@
+.DS_Store
+__pycache__/
+*.pyc
+dist/
+# Claude Code session scratch
+.claude/
+# Untracked reference material and stray files (large or third-party)
+local/

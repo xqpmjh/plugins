@@ -1,0 +1,739 @@
+#!/usr/bin/env python3
+"""Render recent prompts for the current project as a right-side status line column.
+
+    history_bar.py --statusline <dir>   # read left lines from stdin, print full rows
+    history_bar.py <dir> [count]        # single line for tmux status bars
+
+Data source: <config>/history.jsonl, which Claude Code writes as you type.
+The file is read backwards in blocks, so cost does not grow with its size.
+If the exact project has no entries, parent directories are tried up to the git
+root (at most four levels, both the logical path and its realpath). Without a
+.git above it, a directory matches only itself.
+
+Paste previews are opt-in: set CLAUDE_HISTORY_PASTE=1 to read the first line of
+pasted content from <config>/paste-cache. Otherwise a paste is shown as "[paste]".
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import unicodedata
+
+CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+HIST = os.path.join(CONFIG_DIR, "history.jsonl")
+PASTE_CACHE = os.path.join(CONFIG_DIR, "paste-cache")
+PASTE_ENABLED = os.environ.get("CLAUDE_HISTORY_PASTE", "").lower() in ("1", "true", "yes")
+LANG = os.environ.get("CLAUDE_HISTORY_LANG", "en").lower()
+# "session" limits the column to the prompts of the running Claude session, so
+# two sessions in one directory do not show each other's history.
+SCOPE = os.environ.get("CLAUDE_HISTORY_SCOPE", "").lower()
+if LANG not in ("en", "zh"):
+    LANG = "en"
+
+SEG_WIDTH = 60
+COL_GAP = 6
+LEFT_GAP = 3
+STYLE = os.environ.get("CLAUDE_HISTORY_STYLE", "\033[3;38;5;111m")
+RESET = "\033[0m"
+UP_LEVELS = 4
+MIN_TWO_COL = 32
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+PASTED = re.compile(r"\[Pasted text #(\d+) \+\d+ lines\]")
+IMAGE = re.compile(r"\s*\[Image #\d+\]")
+# Separators the user typed after an image ("[Image #1] ，说明"); they only lead
+# the text once the placeholder is gone. Not "/", "@" or "#", which start commands.
+LEAD_PUNCT = frozenset("，。、；：！？,.;:!?…·-—–")
+CONTENT_HASH = re.compile(r"^[0-9a-f]{8,64}$")
+# A pasted shell transcript starts with the prompt line, which says nothing
+# about intent. Common shapes: [user@host dir]$ cmd, user@host:~/p$ cmd,
+# (venv) host:~$ cmd, $ cmd, hostname% cmd, PS C:\> cmd, C:\> cmd, and the
+# Starship/powerline glyph prompts.
+_ENV_PREFIX = r"(?:\([^)\s]{1,24}\)\s*)*"          # (base) (venv) prefixes
+_ENV_ONE = r"(?:\([^)\s]{1,24}\)\s*)+"
+_STRONG_PROMPT = (
+    r"(?:"
+    r"\[[^\]\s]+@[^\]]*\]\s*[#$%>]"                # [user@host dir]$
+    r"|[\w.-]+@[\w.-]+(?::[^\s$#%>]*)?(?:\s+[^\s$#%>]+)*\s*[#$%>]"
+    r"|(?:bash|sh|zsh|fish|dash)[-\d.]*\s*[#$]"
+    r"|PS(?: [A-Za-z]:\\[^>]*)?>"
+    r"|[A-Za-z]:\\[^>]*>"                          # C:\dir>
+    r"|(?:➜|❯)\s"
+    r")"
+)
+PROMPT = re.compile(
+    r"^(?:" + _ENV_PREFIX + r"(?:" + _STRONG_PROMPT +
+    r"|[$%](?:\s|$)"                               # weak: $ cmd, % cmd
+    r"|[A-Za-z][\w.-]*%(?:\s|$)"                   # weak: hostname%
+    r"|(?:λ|→)\s"                                  # weak glyphs
+    r"))"
+)
+# Strong shapes plus an environment prefix: an inline display is the user's own
+# prompt text, so weak signals would eat its subject (`CPU% is high`).
+PROMPT_TRANSCRIPT = re.compile(
+    r"^(?:" + _ENV_ONE + r"(?:" + _STRONG_PROMPT + r"|[$%](?:\s|$))"
+    r"|" + _STRONG_PROMPT + r")"
+)
+# Starship and powerline prompts put the glyph at the end of a module line
+# (`~/proj on  main ❯ cmd`), not at the start, so the glyph alone is not enough:
+# a typed sentence can quote it too. Only a Starship-shaped head counts.
+STARSHIP = re.compile(r"^[^\s]+ on\s+(?:[^\s❯➜]+\s+)*(?:➜|❯)\s")
+
+META_WORDS = {"exit", "quit"}
+# Built-ins that only change the UI or session state; their arguments are
+# settings values, not conversation content. Skill commands (/wrapup, ...)
+# are user intent and stay visible.
+UI_CMDS = {
+    "/effort", "/model", "/context", "/color", "/theme", "/tui", "/fast",
+    "/statusline", "/output-style", "/permissions", "/config", "/rename",
+    "/compact", "/clear", "/plugins", "/plugin", "/mcp", "/doctor", "/skills",
+    "/help", "/status", "/tasks", "/reload-plugins", "/reload-skills",
+}
+# Only the bare command is a UI action; with text it is user intent
+# (`/resume find that session`).
+BARE_ONLY_UI = {"/resume", "/"}
+
+LABELS = {
+    "en": {"now": "now"},
+    "zh": {"now": "刚刚"},
+}
+
+
+def disp_width(ch):
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def text_width(text):
+    return sum(disp_width(ch) for ch in ANSI.sub("", text))
+
+
+def fit(text, maxw):
+    out, w = [], 0
+    for ch in text:
+        cw = disp_width(ch)
+        if w + cw > maxw:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out)
+
+
+def tmux_escape(text):
+    return text.replace("#", "##")
+
+
+def clean(text):
+    text = text.replace("\r", " ").replace("\n", " ")
+    text = "".join(ch if ch >= " " or ch == "\t" else " " for ch in text)
+    return " ".join(text.split())
+
+
+def prompt_prefix_end(text):
+    """End offset of a transcript's leading prompt in `text`, or 0.
+
+    Only strong shapes count: an inline display is the user's own prompt, and
+    weak signals (`CPU% is high`, `λ calculus`) are prose. Starship puts its
+    glyph after the modules, so a `dir on branch ❯` head also counts.
+    """
+    match = PROMPT_TRANSCRIPT.match(text)
+    if match:
+        return match.end()
+    match = STARSHIP.match(text)
+    if match:
+        return match.end()
+    return 0
+
+
+def paste_first_line(entry):
+    """First non-empty line of a paste, or "" when there is nothing to preview.
+
+    history.jsonl stores small pastes in `content` and large ones only as a
+    `contentHash`; the body for the latter lives in paste-cache/<hash>.txt.
+    A transcript copied from a shell opens with the prompt line, which is not
+    the user's intent, so it counts as unreadable and yields no preview.
+    """
+    text = ""
+    if isinstance(entry, dict):
+        text = str(entry.get("content") or "")
+        if not text:
+            digest = entry.get("contentHash")
+            if isinstance(digest, str) and CONTENT_HASH.match(digest):
+                try:
+                    with open(os.path.join(PASTE_CACHE, digest + ".txt"),
+                              encoding="utf-8", errors="replace") as fh:
+                        text = fh.read(4096)
+                except OSError:
+                    return ""
+    for line in text.splitlines():
+        line = clean(line)
+        if not line:
+            continue
+        return "" if PROMPT.match(line) or STARSHIP.match(line) else line
+    return ""
+
+
+def drop_images(text):
+    """Remove `[Image #N]` placeholders, and with them the separators and
+    invisible characters (zero-width, NBSP, control) left leading the text."""
+    out = IMAGE.sub("", text)
+    if out == text:
+        return out
+    i = 0
+    while i < len(out) and (out[i] in LEAD_PUNCT
+                            or unicodedata.category(out[i])[0] in "ZC"):
+        i += 1
+    return out[i:]
+
+
+def display_text(obj):
+    """Replace `[Pasted text #N +M lines]` with a paste preview or "[paste]".
+
+    `[Image #N]` placeholders are dropped; only the accompanying text stays."""
+    raw = drop_images(str(obj.get("display") or ""))
+    if "[Pasted text" not in raw:
+        return raw
+    if not PASTE_ENABLED:
+        return PASTED.sub("[paste]", raw)
+    pastes = obj.get("pastedContents") or {}
+
+    def sub(match):
+        line = paste_first_line(pastes.get(match.group(1)))
+        return "» " + line if line else "[paste]"
+
+    return PASTED.sub(sub, raw)
+
+
+def is_noise(display):
+    """Bash-mode inputs (`!...`), UI settings commands, and exit words are not
+    conversation content and do not take a history slot. Neither does an input
+    that is only image placeholders. An input that is only a paste stays: it is
+    shown as `[paste]` (or its first line with the preview on), which still
+    marks that turn. The image placeholder is dropped in display_text()."""
+    text = clean(str(display or ""))
+    if not clean(drop_images(text)):
+        return True
+    # A display that is only a prompt line carries no intent either.
+    stripped = clean(drop_images(PASTED.sub("", text)))
+    match = PROMPT.match(stripped) or STARSHIP.match(stripped)
+    if match and not stripped[match.end():].strip():
+        return True
+    if text.startswith("!"):
+        return True
+    if text in META_WORDS:
+        return True
+    words = text.split()
+    if words[0] in UI_CMDS:
+        return True
+    return words[0] in BARE_ONLY_UI and len(words) == 1
+
+
+def dedup_key(obj):
+    """Identity of an input for collapsing retries: its text plus its pastes.
+
+    A resend after a dropped connection repeats the same text, so only the
+    newest copy is shown. Two inputs that share a `[Pasted text ...]`
+    placeholder but paste different content stay apart."""
+    text = clean(drop_images(str(obj.get("display") or "")))
+    pastes = obj.get("pastedContents")
+    ids = []
+    if isinstance(pastes, dict):
+        for num in sorted(pastes, key=str):
+            entry = pastes[num]
+            if isinstance(entry, dict):
+                ids.append((str(num), str(entry.get("contentHash") or entry.get("content") or "")))
+    return text, tuple(ids)
+
+
+def rel_age(ts_ms):
+    d = max(0.0, time.time() - (ts_ms or 0) / 1000.0)
+    if d < 60:
+        return LABELS[LANG]["now"]
+    if d < 3600:
+        return "%dm" % int(d // 60)
+    if d < 86400:
+        return "%dh" % int(d // 3600)
+    return "%dd" % int(d // 86400)
+
+
+def scan_back(order, count, session=None):
+    """One backwards pass over history.jsonl, returning {project: [entries]}.
+
+    With `session`, only entries recorded by that session are kept.
+
+    Walking newest-first, an input that repeats the entry kept just before it
+    in the same directory is skipped (see dedup_key).
+
+    Stops early once the highest-priority directory has `count` entries, so
+    the common case reads only the tail of the file.
+    """
+    found = dict((p, []) for p in order)
+    last = {}
+
+    def done():
+        return len(found[order[0]]) >= count
+
+    if not order or done():
+        return found
+    try:
+        fh = open(HIST, "rb")
+    except OSError:
+        return found
+    with fh:
+        fh.seek(0, os.SEEK_END)
+        pos = fh.tell()
+        tail = b""
+
+        def take(raw):
+            try:
+                obj = json.loads(raw)
+            except ValueError:
+                return False
+            proj = obj.get("project")
+            if (proj in found and len(found[proj]) < count
+                    and (session is None or obj.get("sessionId") == session)
+                    and not is_noise(obj.get("display"))):
+                key = dedup_key(obj)
+                if last.get(proj) != key:
+                    last[proj] = key
+                    found[proj].append(obj)
+            return done()
+
+        while pos > 0:
+            step = min(65536, pos)
+            pos -= step
+            fh.seek(pos)
+            chunk = fh.read(step) + tail
+            lines = chunk.split(b"\n")
+            tail = lines[0]
+            for raw in reversed(lines[1:]):
+                if raw and take(raw):
+                    return found
+        if tail:
+            take(tail)
+    return found
+
+
+def candidates(start):
+    """Candidate directories from `start` up to its git root.
+
+    Both the logical path and its realpath are walked: Claude records the
+    logical cwd, and a session started through a symlinked directory would
+    otherwise miss its own history. Parents are only tried inside a git
+    work tree (up to the directory holding `.git`); a directory with no
+    `.git` above it matches only itself, so a new project in a container
+    folder such as ~/Codes does not inherit the container's old prompts.
+    """
+    home = os.path.expanduser("~")
+    seen, out = set(), []
+    for path in (os.path.abspath(start), os.path.realpath(start)):
+        chain, cur = [], path
+        for _ in range(UP_LEVELS + 1):
+            chain.append(cur)
+            parent = os.path.dirname(cur)
+            if (os.path.exists(os.path.join(cur, ".git"))
+                    or parent == cur or cur == home):
+                break
+            cur = parent
+        if not os.path.exists(os.path.join(chain[-1], ".git")):
+            chain = chain[:1]
+        for cur in chain:
+            if cur not in seen:
+                seen.add(cur)
+                out.append(cur)
+    return out
+
+
+def collect(start, count, session=None):
+    cands = candidates(start)
+    found = scan_back(cands, count, session)
+    for cand in cands:
+        if found.get(cand):
+            return found[cand]
+    return []
+
+
+def build_cells(entries):
+    """(text, age) per displayable entry, in the order given."""
+    cells = []
+    for obj in entries:
+        if is_noise(obj.get("display")):
+            continue
+        text = clean(display_text(obj))
+        # A transcript pasted inline (no `[Pasted text ...]` placeholder) keeps
+        # its prompt line; the command is the useful part, the prompt is not.
+        end = prompt_prefix_end(text)
+        if end:
+            text = text[end:].lstrip()
+        if not text:
+            continue
+        cells.append((text, rel_age(obj.get("timestamp"))))
+    return cells
+
+
+def build(entries, total=SEG_WIDTH):
+    """One line per entry, for the tmux bar."""
+    segs = []
+    for text, age in build_cells(entries):
+        # Prefix "❯ " (2 cells), separator " · " (3), and the age also take space.
+        budget = total - 2 - 3 - text_width(age)
+        segs.append("❯ " + fit(text, max(1, budget)) + " · " + age)
+    return segs
+
+
+def wrap(text, width):
+    """Split `text` into lines of at most `width` cells. Breaks at a space when
+    that leaves the line nearly full; otherwise (CJK, long words) mid-text."""
+    lines, cur, curw = [], "", 0
+    for ch in text:
+        cw = disp_width(ch)
+        if curw + cw > width:
+            cut = cur.rfind(" ")
+            if ch != " " and cut > 0 and curw - text_width(cur[:cut]) <= width // 3:
+                lines.append(cur[:cut])
+                cur = cur[cut + 1:]
+            else:
+                lines.append(cur)
+                cur = ""
+            curw = text_width(cur)
+        if ch == " " and not cur:
+            continue
+        cur += ch
+        curw += cw
+    if cur or not lines:
+        lines.append(cur)
+    return lines
+
+
+def cell_lines(text, age, col_w, max_lines):
+    """Lines of one history entry in a column `col_w` cells wide.
+
+    The text wraps onto up to `max_lines` lines (continuations are indented
+    under the text); the age ends the last line. Only when the text needs more
+    lines than that is it cut, and the cut is marked with "…"."""
+    inner = max(1, col_w - 2)
+    suffix = " · " + age
+    sw = text_width(suffix)
+    chunks = wrap(text, inner)
+    if len(chunks) > max_lines:
+        chunks = chunks[:max_lines]
+        chunks[-1] = fit(chunks[-1], max(0, inner - sw - 1)) + "…"
+    elif text_width(chunks[-1]) + sw > inner:
+        if len(chunks) < max_lines:
+            chunks.append("")
+            suffix = suffix.lstrip()
+        else:
+            chunks[-1] = fit(chunks[-1], max(0, inner - sw - 1)) + "…"
+    chunks[-1] += suffix
+    return [("❯ " if i == 0 else "  ") + c for i, c in enumerate(chunks)]
+
+
+def column_lines(cells, rows, col_w):
+    """Stack the entries of one column (oldest first) into at most `rows` lines.
+
+    Every entry gets one line; spare lines go to the newest entries first, so
+    a long prompt wraps when the column has room and is cut with "…" only when
+    it does not."""
+    cells = cells[-rows:]
+    spare = rows - len(cells)
+    alloc = [1] * len(cells)
+    for i in range(len(cells) - 1, -1, -1):
+        if spare <= 0:
+            break
+        want = len(cell_lines(cells[i][0], cells[i][1], col_w, rows))
+        extra = min(want - 1, spare)
+        alloc[i] += extra
+        spare -= extra
+    out = []
+    for (text, age), n in zip(cells, alloc):
+        out.extend(cell_lines(text, age, col_w, n))
+    return out
+
+
+def _state_dir():
+    """Private state directory (0700), avoiding a predictable /tmp path."""
+    path = os.path.join(tempfile.gettempdir(),
+                        "claude-history-bar-%d" % os.getuid())
+    try:
+        if os.path.islink(path) or (os.path.exists(path) and not os.path.isdir(path)):
+            return None
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        if os.lstat(path).st_uid != os.getuid():
+            return None
+    except OSError:
+        return None
+    return path
+
+
+def _session_key():
+    """Width cache is per pane/session; one window must not reuse another's."""
+    raw = (os.environ.get("TMUX_PANE") or os.environ.get("ITERM_SESSION_ID")
+           or os.environ.get("TERM_SESSION_ID") or "default")
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
+
+
+def _note(width, source):
+    """With DEBUG=1, append each render's width source under the state dir."""
+    if not os.environ.get("DEBUG"):
+        return
+    path = _state_dir()
+    if not path:
+        return
+    try:
+        with open(os.path.join(path, "debug.log"), "a") as fh:
+            fh.write("%s %s width=%s source=%s\n"
+                     % (time.strftime("%Y-%m-%d %H:%M:%S"), _session_key(),
+                        width, source))
+    except OSError:
+        pass
+
+
+def _cache_path():
+    path = _state_dir()
+    return os.path.join(path, "width-" + _session_key()) if path else None
+
+
+def _cached_width():
+    path = _cache_path()
+    if not path:
+        return 0
+    try:
+        with open(path) as fh:
+            width = int(fh.read().strip())
+    except (OSError, ValueError):
+        return 0
+    return width if 0 < width < 4096 else 0
+
+
+def _remember_width(width):
+    path = _cache_path()
+    if not path:
+        return
+    try:
+        with open(path, "w") as fh:
+            fh.write(str(width))
+    except OSError:
+        pass
+
+
+def tty_width():
+    """Width of the controlling terminal, when the status line process has one."""
+    try:
+        fd = os.open("/dev/tty", os.O_RDONLY | getattr(os, "O_NOCTTY", 0))
+    except OSError:
+        return 0
+    try:
+        import fcntl
+        import struct
+        import termios
+        data = fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8)
+        cols = struct.unpack("HHHH", data)[1]
+        return cols if cols > 0 else 0
+    except (OSError, ImportError, ValueError):
+        return 0
+    finally:
+        os.close(fd)
+
+
+def pane_width():
+    """Terminal width: forced, tmux, COLUMNS, /dev/tty, cached, then 120."""
+    import shutil
+
+    forced = os.environ.get("CLAUDE_HISTORY_WIDTH")
+    if forced:
+        try:
+            forced_w = int(forced)
+            if forced_w > 0:
+                _note(forced_w, "env")
+                return forced_w
+        except ValueError:
+            pass
+
+    pane = os.environ.get("TMUX_PANE")
+    in_tmux = bool(pane or os.environ.get("TMUX"))
+    exes = [shutil.which("tmux"), "/opt/homebrew/bin/tmux", "/usr/local/bin/tmux"]
+    variants = []
+    if pane:
+        variants.append(["-t", pane])
+    if in_tmux:
+        # Without TMUX_PANE fall back to the current client, but only when
+        # actually inside tmux; otherwise this returns another pane's width.
+        variants.append([])
+    for exe in exes:
+        if not exe or not os.path.exists(exe):
+            continue
+        for fmt in ("#{pane_width}", "#{client_width}"):
+            for extra in variants:
+                try:
+                    res = subprocess.run(
+                        [exe, "display-message", "-p"] + extra + [fmt],
+                        capture_output=True, text=True, timeout=3,
+                        stdin=subprocess.DEVNULL,
+                    )
+                    width = int(res.stdout.strip())
+                    if width > 0:
+                        _remember_width(width)
+                        _note(width, "tmux %s %s" % (fmt, " ".join(extra) or "-"))
+                        return width
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    continue
+
+    try:
+        width = int(os.environ.get("COLUMNS") or 0)
+    except ValueError:
+        width = 0
+    if width > 0:
+        _note(width, "COLUMNS")
+        return width
+
+    width = tty_width()
+    if width > 0:
+        _remember_width(width)
+        _note(width, "tty")
+        return width
+
+    cached = _cached_width()
+    if cached:
+        _note(cached, "cached")
+        return cached
+    _note(120, "default")
+    return 120
+
+
+def clamp(text, maxw):
+    if text_width(text) <= maxw:
+        return text
+    return fit(text, maxw - 1) + "…"
+
+
+def pad_to(text, target):
+    return text + " " * max(0, target - text_width(text))
+
+
+def middle_elide(text, maxw):
+    """Keep the head and tail, elide the middle; best for paths."""
+    if text_width(text) <= maxw:
+        return text
+    if maxw < 14:
+        return fit(ANSI.sub("", text), maxw)
+    # Strip color before slicing so an SGR sequence cannot be cut in half.
+    text = ANSI.sub("", text)
+    if text_width(text) <= maxw:
+        return text
+    head = fit(text, 12)
+    keep = maxw - text_width(head) - 1
+    tail, w = [], 0
+    for ch in reversed(text):
+        cw = disp_width(ch)
+        if w + cw > keep:
+            break
+        tail.append(ch)
+        w += cw
+    return head + "…" + "".join(reversed(tail))
+
+
+def render_statusline(lefts, project, session=None):
+    """Print `lefts` (one list item per row) with the history column on the right.
+
+    `session` is the Claude session id; it only filters when
+    CLAUDE_HISTORY_SCOPE=session.
+    """
+    while lefts and not lefts[-1]:
+        lefts.pop()
+    if not lefts:
+        return
+
+    rows = len(lefts)
+    width = pane_width()
+    scoped = session if SCOPE == "session" and session else None
+    entries = collect(project, rows * 2, scoped)
+    # Left rows are elided only when they would squeeze the history column
+    # below a readable minimum. The floor is a third of the pane (16..45
+    # cells), so narrow panes behave as before.
+    floor = max(16, min(45, width // 3))
+    if entries:
+        ncols = 2 if len(entries) > rows else 1
+        reserve = ncols * MIN_TWO_COL + (ncols - 1) * COL_GAP
+    else:
+        reserve = 0
+    natural = max(text_width(left) for left in lefts)
+    limit = max(floor, min(natural, width - LEFT_GAP - reserve))
+    lefts = [middle_elide(left, limit) for left in lefts]
+
+    if not entries:
+        print("\n".join(lefts))
+        return
+
+    max_left = max(text_width(left) for left in lefts)
+    avail = width - max_left - LEFT_GAP
+    two_col = len(entries) > rows
+
+    if two_col:
+        col_w = min(SEG_WIDTH, (avail - COL_GAP) // 2)
+        if col_w < MIN_TWO_COL:
+            # Two columns narrower than a readable third each: fall back to one.
+            two_col = False
+            col_w = avail
+    else:
+        col_w = avail
+    if col_w < 12:
+        print("\n".join(lefts))
+        return
+
+    cells = build_cells(entries)
+    cells.reverse()  # oldest first, newest at the bottom
+    if not two_col:
+        # One column holds `rows` lines; keep the newest after entries that
+        # render empty (prompt-only displays) have been dropped.
+        cells = cells[-rows:]
+    col1 = column_lines(cells[:rows], rows, col_w)
+    col2 = column_lines(cells[rows:rows * 2], rows, col_w) if two_col else []
+    # Two columns sit against the right edge. A single column starts right
+    # after the left rows and takes all the remaining width, so a long prompt
+    # wraps less and the middle of the pane is not left empty.
+    start = width - (col_w * 2 + COL_GAP) if two_col else max_left + LEFT_GAP
+
+    def styled(cell):
+        return STYLE + cell + RESET if cell else ""
+
+    out = []
+    for i, left in enumerate(lefts):
+        gap = start - text_width(left)
+        if gap < 1:
+            out.append(left)
+            continue
+        cell1 = clamp(col1[i], col_w) if i < len(col1) else ""
+        cell2 = clamp(col2[i], col_w) if i < len(col2) else ""
+        buf = left + " " * gap + styled(cell1)
+        if two_col:
+            buf = pad_to(buf, start + col_w + COL_GAP) + styled(cell2)
+        out.append(buf)
+    print("\n".join(out))
+
+
+def statusline(project):
+    lefts = sys.stdin.read().split("\n")
+    render_statusline(lefts, project)
+
+
+def tmux_line(project, count):
+    segs = build(collect(project, count))
+    print(tmux_escape("    │    ".join(segs)) if segs else "")
+
+
+def main():
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--statusline":
+        statusline(argv[1] if len(argv) > 1 else os.getcwd())
+        return
+    try:
+        count = int(argv[1]) if len(argv) > 1 else 2
+    except ValueError:
+        count = 2
+    tmux_line(argv[0] if argv else os.getcwd(), max(1, count))
+
+
+if __name__ == "__main__":
+    main()
