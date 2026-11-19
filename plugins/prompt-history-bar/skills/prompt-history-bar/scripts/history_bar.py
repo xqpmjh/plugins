@@ -10,8 +10,11 @@ If the exact project has no entries, parent directories are tried up to the git
 root (at most four levels, both the logical path and its realpath). Without a
 .git above it, a directory matches only itself.
 
-Paste previews are opt-in: set CLAUDE_HISTORY_PASTE=1 to read the first line of
-pasted content from <config>/paste-cache. Otherwise a paste is shown as "[paste]".
+Paste previews are opt-in: set CLAUDE_HISTORY_PASTE=1. A paste is then shown as
+the first line of the agent's reply in the session transcript, or, without a
+reply, the first line of the pasted content (read from <config>/paste-cache).
+Otherwise a paste is shown as "[paste]" next to typed text, and a paste-only
+input is skipped.
 """
 
 import json
@@ -21,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 import unicodedata
 
 CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -43,6 +47,7 @@ UP_LEVELS = 4
 MIN_TWO_COL = 32
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 PASTED = re.compile(r"\[Pasted text #(\d+) \+\d+ lines\]")
+PASTE_LABEL = "[paste]"
 IMAGE = re.compile(r"\s*\[Image #\d+\]")
 # Separators the user typed after an image ("[Image #1] ，说明"); they only lead
 # the text once the placeholder is gone. Not "/", "@" or "#", which start commands.
@@ -153,7 +158,8 @@ def paste_first_line(entry):
     history.jsonl stores small pastes in `content` and large ones only as a
     `contentHash`; the body for the latter lives in paste-cache/<hash>.txt.
     A transcript copied from a shell opens with the prompt line, which is not
-    the user's intent, so it counts as unreadable and yields no preview.
+    the user's intent: the prompt is stripped and the command after it is the
+    preview. A line that is only a prompt is skipped in favour of the next one.
     """
     text = ""
     if isinstance(entry, dict):
@@ -169,9 +175,12 @@ def paste_first_line(entry):
                     return ""
     for line in text.splitlines():
         line = clean(line)
-        if not line:
-            continue
-        return "" if PROMPT.match(line) or STARSHIP.match(line) else line
+        probe = line + " "  # a prompt-only line lost its trailing space in clean()
+        match = PROMPT.match(probe) or STARSHIP.match(probe)
+        if match:
+            line = line[match.end():].strip()
+        if line:
+            return line
     return ""
 
 
@@ -188,20 +197,127 @@ def drop_images(text):
     return out[i:]
 
 
-def display_text(obj):
+MARKUP = re.compile(r"[*`]+|^\s*(?:#{1,6}|>|[-+])\s+")
+PAIR_MS = 5000
+TURN_LINE = re.compile(rb'"type"\s*:\s*"(?:user|assistant)"')
+
+
+def find_transcript(session):
+    """Path of `<config>/projects/*/<session>.jsonl`, or None."""
+    if not isinstance(session, str) or not re.fullmatch(r"[\w-]{8,64}", session):
+        return None
+    root = os.path.join(CONFIG_DIR, "projects")
+    try:
+        dirs = os.listdir(root)
+    except OSError:
+        return None
+    for name in dirs:
+        path = os.path.join(root, name, session + ".jsonl")
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _iso_ms(stamp):
+    try:
+        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp() * 1000
+    except ValueError:
+        return None
+
+
+def _first_text(obj):
+    """First non-empty line of an assistant record's text blocks, markup removed."""
+    content = (obj.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return ""
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            for line in str(block.get("text") or "").splitlines():
+                line = clean(MARKUP.sub("", line))
+                if line:
+                    return line
+    return ""
+
+
+def transcript_replies(path, oldest_ms):
+    """[(prompt time in ms, first reply line)] for typed prompts newer than
+    `oldest_ms - PAIR_MS`, read backwards from the end of the transcript.
+
+    A reply is the first assistant text after a typed prompt and before the
+    next one; it is "" while the agent has not written text yet."""
+    out, reply = [], ""
+    try:
+        fh = open(path, "rb")
+    except OSError:
+        return out
+    with fh:
+        fh.seek(0, os.SEEK_END)
+        pos, tail = fh.tell(), b""
+        while pos > 0:
+            step = min(1 << 20, pos)
+            pos -= step
+            fh.seek(pos)
+            lines = (fh.read(step) + tail).split(b"\n")
+            tail = lines[0] if pos > 0 else b""
+            for raw in reversed(lines[1:] if pos > 0 else lines):
+                if not TURN_LINE.search(raw):
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except ValueError:
+                    continue
+                if obj.get("isSidechain"):
+                    continue
+                if obj.get("type") == "assistant":
+                    reply = _first_text(obj) or reply
+                elif obj.get("promptSource") == "typed":
+                    ms = _iso_ms(obj.get("timestamp"))
+                    if ms is not None:
+                        out.append((ms, reply))
+                        if ms < oldest_ms - PAIR_MS:
+                            return out
+                    reply = ""
+    return out
+
+
+def agent_summaries(entries):
+    """{(sessionId, timestamp): reply line} for entries that contain a paste.
+
+    Prompts are paired with transcript records by time (they differ by well
+    under a second); a pair further apart than PAIR_MS is ignored."""
+    wanted = {}
+    for obj in entries:
+        if "[Pasted text" in str(obj.get("display") or ""):
+            wanted.setdefault(obj.get("sessionId"), []).append(obj.get("timestamp") or 0)
+    found = {}
+    for session, stamps in wanted.items():
+        path = find_transcript(session)
+        if not path:
+            continue
+        replies = transcript_replies(path, min(stamps))
+        for stamp in stamps:
+            ms, reply = min(replies, key=lambda r: abs(r[0] - stamp), default=(None, ""))
+            if reply and ms is not None and abs(ms - stamp) <= PAIR_MS:
+                found[(session, stamp)] = reply
+    return found
+
+
+def display_text(obj, summary=""):
     """Replace `[Pasted text #N +M lines]` with a paste preview or "[paste]".
+
+    With a `summary` (the agent's reply line) the preview is that line.
 
     `[Image #N]` placeholders are dropped; only the accompanying text stays."""
     raw = drop_images(str(obj.get("display") or ""))
     if "[Pasted text" not in raw:
         return raw
     if not PASTE_ENABLED:
-        return PASTED.sub("[paste]", raw)
+        return PASTED.sub(PASTE_LABEL, raw)
     pastes = obj.get("pastedContents") or {}
 
     def sub(match):
-        line = paste_first_line(pastes.get(match.group(1)))
-        return "» " + line if line else "[paste]"
+        line = summary or paste_first_line(pastes.get(match.group(1)))
+        return "» " + line if line else PASTE_LABEL
 
     return PASTED.sub(sub, raw)
 
@@ -209,9 +325,9 @@ def display_text(obj):
 def is_noise(display):
     """Bash-mode inputs (`!...`), UI settings commands, and exit words are not
     conversation content and do not take a history slot. Neither does an input
-    that is only image placeholders. An input that is only a paste stays: it is
-    shown as `[paste]` (or its first line with the preview on), which still
-    marks that turn. The image placeholder is dropped in display_text()."""
+    that is only image placeholders. An input that is only a paste keeps its
+    slot here; build_cells() drops it when it would show only `[paste]`. The
+    image placeholder is dropped in display_text()."""
     text = clean(str(display or ""))
     if not clean(drop_images(text)):
         return True
@@ -358,10 +474,16 @@ def collect(start, count, session=None):
 def build_cells(entries):
     """(text, age) per displayable entry, in the order given."""
     cells = []
+    summaries = agent_summaries(entries) if PASTE_ENABLED else {}
     for obj in entries:
         if is_noise(obj.get("display")):
             continue
-        text = clean(display_text(obj))
+        summary = summaries.get((obj.get("sessionId"), obj.get("timestamp") or 0), "")
+        text = clean(display_text(obj, summary))
+        # A bare "[paste]" placeholder says nothing; keep only inputs with
+        # typed text or a readable paste preview.
+        if not text.replace(PASTE_LABEL, "").strip():
+            continue
         # A transcript pasted inline (no `[Pasted text ...]` placeholder) keeps
         # its prompt line; the command is the useful part, the prompt is not.
         end = prompt_prefix_end(text)

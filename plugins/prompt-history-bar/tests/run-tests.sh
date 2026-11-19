@@ -119,9 +119,9 @@ check "paste preview is off by default" 'printf "%s" "$PLAIN_OUT" | grep -q "\[p
 PASTED_OUT="$(printf '%s' "$SAMPLE" | CLAUDE_HISTORY_WIDTH=160 CLAUDE_HISTORY_PASTE=1 python3 "$SCRIPTS/statusline.py")"
 check "paste preview shows the first line when enabled" 'printf "%s" "$PASTED_OUT" | grep -q "secret first line"'
 
-# A transcript pasted from a shell opens with the prompt line; that says nothing
-# about intent, so the cell falls back to "[paste]" and keeps the typed text.
-check "a shell-prompt first line is not used as a preview" 'printf "%s" "$PASTED_OUT" | grep -q "\[paste\] deploy the box" && ! printf "%s" "$PASTED_OUT" | grep -q "make install"'
+# A transcript pasted from a shell opens with the prompt line; the prompt says
+# nothing about intent, so the preview is the command after it.
+check "a shell-prompt first line is stripped from the preview" 'printf "%s" "$PASTED_OUT" | grep -q "make install deploy the box" && ! printf "%s" "$PASTED_OUT" | grep -q "itdev@host ssl"'
 
 # A cache file with invalid UTF-8 must not take the whole column down.
 check "a non-UTF-8 paste cache does not break the bar" 'printf "%s" "$PASTED_OUT" | grep -q "binary paste"'
@@ -144,7 +144,7 @@ spec.loader.exec_module(hb)
 
 
 def preview_hit(text):
-    return hb.paste_first_line({"content": text}) == ""
+    return hb.paste_first_line({"content": text}) != hb.clean(text)
 
 
 def strip_hit(text):
@@ -199,13 +199,22 @@ bad = (
     + [t for t in weak if not preview_hit(t) or strip_hit(t)]
     + [t for t in prose if preview_hit(t) or strip_hit(t)]
 )
+# Exact previews: the command after the prompt; a prompt-only line is skipped.
+exact = [
+    ("[itdev@host ssl]$ make install\ninstalled", "make install"),
+    ("~/proj on  main \u276f\ncargo test", "cargo test"),
+    ("[root@host ~]#\n\nls -l", "ls -l"),
+    ("[root@host ~]#", ""),
+    ("plain first line\nsecond", "plain first line"),
+]
+bad += [t for t, want in exact if hb.paste_first_line({"content": t}) != want]
 print("ok" if not bad else repr(bad))
 PY
 )"
 check "prompt shapes are recognised without over-matching" '[ "$SHAPES" = "ok" ]'
 
-# An input that is only a paste still takes a slot (as the preview line, or
-# "[paste]" when the first line is a shell prompt); image-only inputs are skipped
+# An input that is only a paste takes a slot only as the preview line; image-only
+# inputs are skipped
 # and image placeholders are stripped from entries that also have text.
 check "image-only inputs are skipped" '! printf "%s" "$PASTED_OUT" | grep -q "Image #"'
 check "text next to a paste still shows" 'printf "%s" "$PASTED_OUT" | grep -q "why does this fail"'
@@ -304,8 +313,8 @@ check "an adjacent repeat shows once" '[ "$(printf "%s" "$DUP_OUT" | grep -o "re
 check "a repeat separated by another input is kept" '[ "$(printf "%s" "$DUP_OUT" | grep -o "far apart" | wc -l | tr -d " ")" = "2" ]'
 check "same placeholder with different paste content is kept" '[ "$(printf "%s" "$DUP_OUT" | grep -o "\[paste\] go" | wc -l | tr -d " ")" = "2" ]'
 
-# An input that is only a paste still takes a slot: "[paste]" by default, the
-# first line with the preview on, and "[paste]" again for a shell transcript.
+# An input that is only a paste is skipped by default; with the preview on it
+# shows its first line, or the command after the prompt for a shell transcript.
 PO="$WORK/pasteonly"
 mkdir -p "$PO"
 python3 - "$CONFIG/history.jsonl" "$PO" "$PROMPT_HASH" <<'PY'
@@ -325,10 +334,61 @@ with open(path, "a", encoding="utf-8") as fh:
 PY
 PO_OFF="$(python3 "$SCRIPTS/history_bar.py" "$PO" 10)"
 PO_ON="$(CLAUDE_HISTORY_PASTE=1 python3 "$SCRIPTS/history_bar.py" "$PO" 10)"
-check "paste-only inputs are kept as [paste] by default" '[ "$(printf "%s" "$PO_OFF" | grep -o "\[paste\]" | wc -l | tr -d " ")" = "2" ] && ! printf "%s" "$PO_OFF" | grep -q "only paste body"'
+check "paste-only inputs are skipped by default" '! printf "%s" "$PO_OFF" | grep -q "\[paste\]" && ! printf "%s" "$PO_OFF" | grep -q "only paste body"'
 check "paste-only input shows its first line with the preview" 'printf "%s" "$PO_ON" | grep -q "only paste body"'
-check "paste-only shell transcript falls back to [paste]" 'printf "%s" "$PO_ON" | grep -q "\[paste\]" && ! printf "%s" "$PO_ON" | grep -q "make install"'
+check "paste-only shell transcript shows its command, not [paste]" '! printf "%s" "$PO_ON" | grep -q "\[paste\]" && printf "%s" "$PO_ON" | grep -q "make install" && ! printf "%s" "$PO_ON" | grep -q "itdev@host ssl"'
 check "image-only input stays skipped" '! printf "%s" "$PO_OFF" | grep -q "Image"'
+
+# With the preview on, a paste shows the first line of the agent's reply from the
+# session transcript (paired by time); without a reply it falls back to the
+# command in the paste.
+SM="$WORK/summary"
+SID="sum-session-0001"
+mkdir -p "$SM" "$CONFIG/projects/sum"
+python3 - "$CONFIG" "$SM" "$SID" <<'PY'
+import json
+import sys
+import time
+from datetime import datetime, timezone
+
+config, proj, sid = sys.argv[1:4]
+now = int(time.time() * 1000)
+
+
+def iso(ms):
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+paste = lambda body: {"1": {"id": 1, "type": "text", "content": body}}
+rows = [
+    (now - 3000, "[Pasted text #1 +2 lines]", paste("[itdev@host ~]$ nginx -t\nok"), "**结论：配置没问题**\n\n细节"),
+    (now - 2000, "[Pasted text #1 +2 lines]", paste("[itdev@host ~]$ unanswered cmd\nok"), None),
+    (now - 1000, "typed words [Pasted text #1 +2 lines]", paste("[itdev@host ~]$ other cmd\nok"), "- 第三条回复"),
+]
+with open(config + "/history.jsonl", "a", encoding="utf-8") as fh:
+    for ts, display, pastes, _ in rows:
+        fh.write(json.dumps({"display": display, "project": proj, "sessionId": sid,
+                             "timestamp": ts, "pastedContents": pastes}, ensure_ascii=False) + "\n")
+with open(config + "/projects/sum/" + sid + ".jsonl", "w", encoding="utf-8") as fh:
+    for ts, display, _, reply in rows:
+        fh.write(json.dumps({"type": "user", "promptSource": "typed", "sessionId": sid,
+                             "timestamp": iso(ts + 300), "message": {"content": display}}) + "\n")
+        fh.write(json.dumps({"type": "assistant", "sessionId": sid, "timestamp": iso(ts + 900),
+                             "message": {"content": [{"type": "thinking", "thinking": "x"}]}}) + "\n")
+        if reply:
+            fh.write(json.dumps({"type": "assistant", "sessionId": sid, "timestamp": iso(ts + 1000),
+                                 "message": {"content": [{"type": "text", "text": reply}]}}, ensure_ascii=False) + "\n")
+            fh.write(json.dumps({"type": "user", "sessionId": sid, "timestamp": iso(ts + 1100),
+                                 "message": {"content": [{"type": "tool_result"}]}}) + "\n")
+PY
+SM_ON="$(CLAUDE_HISTORY_PASTE=1 python3 "$SCRIPTS/history_bar.py" "$SM" 10)"
+SM_OFF="$(python3 "$SCRIPTS/history_bar.py" "$SM" 10)"
+check "paste shows the agent's reply line, markup removed" 'printf "%s" "$SM_ON" | grep -q "» 结论：配置没问题" && ! printf "%s" "$SM_ON" | grep -q "\*\*"'
+check "only the first reply line is used" '! printf "%s" "$SM_ON" | grep -q "细节"'
+check "a paste without a reply falls back to its command" 'printf "%s" "$SM_ON" | grep -q "» unanswered cmd"'
+check "typed text stays before the reply preview" 'printf "%s" "$SM_ON" | grep -q "typed words » 第三条回复"'
+check "reply lines are not read with the preview off" '! printf "%s" "$SM_OFF" | grep -q "结论"'
+
 
 # A long prompt wraps onto spare rows of the column and is cut with "…" only
 # when the rows run out; the age stays at the end of the last line.

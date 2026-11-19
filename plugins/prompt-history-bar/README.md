@@ -64,7 +64,7 @@ the workspace trust prompt is accepted.
 | Option | Effect |
 |---|---|
 | `--lang en\|zh` | Age labels in English (default) or Chinese |
-| `--paste` | Show the first line of pasted content instead of `[paste]` |
+| `--paste` | Show the agent's reply line (or the paste's first line) instead of `[paste]` |
 | `--session` | Show only the current session's prompts instead of the whole directory |
 | `--refresh N` | Also re-run the status line every N seconds (whole number, minimum 1), so the bar and its age labels update while Claude is busy or idle |
 | `--force` | Replace an existing, different `statusLine` command |
@@ -91,7 +91,7 @@ Set environment variables in the shell that launches Claude Code:
 | Variable | Default | Meaning |
 |---|---|---|
 | `CLAUDE_HISTORY_LANG` | `en` | `en` or `zh` age labels |
-| `CLAUDE_HISTORY_PASTE` | off | `1` to show the first line of pasted text |
+| `CLAUDE_HISTORY_PASTE` | off | `1` to show the agent's reply line, or the paste's first line, for pasted text |
 | `CLAUDE_HISTORY_SCOPE` | directory | `session` to list only the running session's prompts |
 | `CLAUDE_HISTORY_WIDTH` | auto | Force a width in terminal cells |
 | `CLAUDE_HISTORY_STYLE` | italic blue | ANSI style for history cells |
@@ -109,6 +109,7 @@ telemetry.
 |---|---|---|
 | `~/.claude/history.jsonl` | every render | the prompts shown in the bar |
 | `~/.claude/paste-cache/<hash>.txt` | only with `CLAUDE_HISTORY_PASTE=1` | paste preview |
+| `~/.claude/projects/*/<session>.jsonl` | only with `CLAUDE_HISTORY_PASTE=1` | the agent's first reply line to a paste |
 | `~/.claude/settings.json` | install/uninstall only | register/remove `statusLine` |
 | `git -C <project> rev-parse` | every render | branch name on the left |
 
@@ -129,8 +130,8 @@ entries for the current project, so cost does not grow with the file size. It
 matches both the logical project path and its realpath, tries parents up to
 the git root (four levels at most; none when there is no `.git`), and ignores bash-mode inputs (`!...`), UI commands (`/effort`,
 `/model`, ...), exit words, and inputs that are only image
-placeholders (an input that is only a paste stays, shown as `[paste]` or its
-first line; `[Image #N]` is dropped from entries that also have text, along
+placeholders (an input that is only a paste is shown as its first line with the
+preview on, and skipped otherwise; `[Image #N]` is dropped from entries that also have text, along
 with the separators and invisible characters left at the front, such as the `，`
 in `[Image #1] ，说明`).
 An input that immediately repeats the previous one in the same project (for
@@ -142,11 +143,18 @@ its command; a leading host, bracket, PowerShell, or glyph prompt is stripped
 before display. A bare `$`/`%` line is left alone so ordinary text keeps its
 subject.
 
-With the paste preview on, a paste is shown by its first line. When that line
+With the paste preview on, a paste is shown as the first line of the agent's
+reply to it, read from the session transcript (`<config>/projects/*/<session>.jsonl`)
+and paired with the prompt by time; Markdown markers are removed. Until the agent
+has written text, or when the transcript is missing, the preview is the first line
+of the pasted content.
+
+When the pasted content is the preview, and its first line
 looks like a shell prompt (`[user@host dir]$ ...`, `user@host ~ % ...`,
 `(base) user@host:~$ ...`, `PS C:\> ...`, or a Starship module line such as
-`~/proj on  main ❯ ...`), it says nothing about intent, so the cell shows
-`[paste]` next to any typed text instead. Bare `#` and `>` are not prompt
+`~/proj on  main ❯ ...`), the prompt says nothing about intent, so it is
+stripped and the command after it is shown. A line that is only a prompt is
+skipped in favour of the next non-empty line. Bare `#` and `>` are not prompt
 signals, so script comments and quoted lines still preview.
 
 With enough entries the history uses two columns, aligned to the terminal
@@ -167,8 +175,11 @@ column has to spare (newest first, continuation lines indented), and is cut with
 - **Prompts from a parent directory.** Intentional inside a git repository: when
   the exact directory has no entries, parents are tried up to the git root (four
   levels at most). A directory with no `.git` above it matches only itself.
-- **`[paste]` instead of text.** Set `CLAUDE_HISTORY_PASTE=1`. A paste whose
-  first line is a shell prompt shows `[paste]` even with the preview on.
+- **`[paste]` instead of text.** Set `CLAUDE_HISTORY_PASTE=1`. The preview is
+  the agent's first reply line from the session transcript; a shell
+  transcript previews as the command after its prompt. `[paste]` remains only
+  when no line has readable text (for example an unreadable cache file) next
+  to typed text; a paste-only input like that is skipped.
 - **Misaligned right column.** Set `CLAUDE_HISTORY_WIDTH`, or use tmux.
 
 ## Uninstall

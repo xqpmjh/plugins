@@ -47,7 +47,7 @@ Options:
 | Option | Effect |
 |---|---|
 | `--lang en\|zh` | Age labels in English (default) or Chinese |
-| `--paste` | Show the first line of pasted content instead of `[paste]` |
+| `--paste` | Show the agent's reply line (or the paste's first line) instead of `[paste]` |
 | `--session` | Show only the current session's prompts instead of the whole directory |
 | `--refresh N` | Also re-run the status line every N seconds (whole number, minimum 1), so the bar and its age labels update while Claude is busy or idle |
 | `--force` | Replace a different existing `statusLine` command (backup kept) |
@@ -76,7 +76,7 @@ Set these in the environment that launches Claude Code (for example
 | Variable | Meaning |
 |---|---|
 | `CLAUDE_HISTORY_LANG` | `en` (default) or `zh` |
-| `CLAUDE_HISTORY_PASTE` | `1` to show the first line of pasted content |
+| `CLAUDE_HISTORY_PASTE` | `1` to show the agent's reply line, or the paste's first line |
 | `CLAUDE_HISTORY_SCOPE` | `session` to list only the running session's prompts (default: whole directory) |
 | `CLAUDE_HISTORY_WIDTH` | Force a terminal width in cells |
 | `CLAUDE_HISTORY_STYLE` | ANSI style for the history cells |
@@ -102,9 +102,11 @@ running elsewhere.
   git root (four levels at most). Without a `.git` above it, only the exact
   directory is matched.
 - **Pasted text shows `[paste]`.** Enable the preview with
-  `CLAUDE_HISTORY_PASTE=1`. An input that is only a paste is still listed (as
-  `[paste]`, or its first line with the preview on), and a paste whose first
-  line is a shell prompt stays `[paste]` even with the preview on.
+  `CLAUDE_HISTORY_PASTE=1`. An input that is only a paste is listed only when
+  the preview has a line to show; with the preview off, or when no line has
+  readable text, it is skipped. The preview is the agent's first reply line from
+  the session transcript; before the reply, or without a transcript, it is the
+  command after the paste's shell prompt. `[paste]` appears only next to typed text.
 - **Uninstall.** Run
   `python3 ~/.claude/statusline/prompt-history-bar/install.py --uninstall [--purge]`,
   or `install.py --uninstall --purge` from the skill directory. The
@@ -115,7 +117,9 @@ running elsewhere.
 The script reads only local files:
 
 - `<config>/history.jsonl` — the prompt history it displays.
-- `<config>/paste-cache/<hash>.txt` — only when `CLAUDE_HISTORY_PASTE=1`.
+- `<config>/paste-cache/<hash>.txt` and `<config>/projects/*/<session>.jsonl` (the
+  session transcript, for the agent's reply line) — only when
+  `CLAUDE_HISTORY_PASTE=1`.
 - Git branch via `git -C <project> rev-parse` for the left column.
 
 Nothing is uploaded. The history column displays prompt text on screen, so be
@@ -130,8 +134,8 @@ entries for the current project, so its cost does not grow with the file size.
 It accepts both the logical project path and its realpath, tries parents up to
 the git root (four levels at most; none when there is no `.git`), and ignores bash-mode inputs (`!...`), UI commands (`/effort`,
 `/model`, ...), exit words, and inputs that are only image
-placeholders (an input that is only a paste stays, shown as `[paste]` or its
-first line; `[Image #N]` is dropped from entries that also have text, along
+placeholders (an input that is only a paste is shown as its first line with the
+preview on, and skipped otherwise; `[Image #N]` is dropped from entries that also have text, along
 with the separators and invisible characters left at the front, such as the `，`
 in `[Image #1] ，说明`).
 An input that immediately repeats the previous one in the same project (for
@@ -143,11 +147,18 @@ its command; a leading host, bracket, PowerShell, or glyph prompt is stripped
 before display. A bare `$`/`%` line is left alone so ordinary text keeps its
 subject.
 
-With the paste preview on, a paste is shown by its first line. When that line
+With the paste preview on, a paste is shown as the first line of the agent's
+reply to it, read from the session transcript (`<config>/projects/*/<session>.jsonl`)
+and paired with the prompt by time; Markdown markers are removed. Until the agent
+has written text, or when the transcript is missing, the preview is the first line
+of the pasted content.
+
+When the pasted content is the preview, and its first line
 looks like a shell prompt (`[user@host dir]$ ...`, `user@host ~ % ...`,
 `(base) user@host:~$ ...`, `PS C:\> ...`, or a Starship module line such as
-`~/proj on  main ❯ ...`), it says nothing about intent, so the cell shows
-`[paste]` next to any typed text instead. Bare `#` and `>` are not prompt
+`~/proj on  main ❯ ...`), the prompt says nothing about intent, so it is
+stripped and the command after it is shown. A line that is only a prompt is
+skipped in favour of the next non-empty line. Bare `#` and `>` are not prompt
 signals, so script comments and quoted lines still preview.
 
 With enough entries the history uses two columns, aligned to the terminal
