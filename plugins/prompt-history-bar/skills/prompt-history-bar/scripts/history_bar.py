@@ -31,6 +31,7 @@ CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claud
 HIST = os.path.join(CONFIG_DIR, "history.jsonl")
 PASTE_CACHE = os.path.join(CONFIG_DIR, "paste-cache")
 PASTE_ENABLED = os.environ.get("CLAUDE_HISTORY_PASTE", "").lower() in ("1", "true", "yes")
+CHOICES_ENABLED = os.environ.get("CLAUDE_HISTORY_CHOICES", "1").lower() not in ("0", "false", "no")
 LANG = os.environ.get("CLAUDE_HISTORY_LANG", "en").lower()
 # "session" limits the column to the prompts of the running Claude session, so
 # two sessions in one directory do not show each other's history.
@@ -302,6 +303,80 @@ def agent_summaries(entries):
     return found
 
 
+CHOICE_MARK = "↳ "
+CHOICE_SCAN_BYTES = 4 << 20
+CHOICE_SESSIONS = 3
+
+
+def transcript_choices(path, oldest_ms, limit):
+    """[(time in ms, answer text)] of AskUserQuestion answers, newest first.
+
+    A choice-box answer is a user reply that history.jsonl never records; it
+    exists only as a tool result with `toolUseResult.answers` in the session
+    transcript. Reads backwards from the end, at most CHOICE_SCAN_BYTES, and
+    stops at an answer older than `oldest_ms` or after `limit` answers."""
+    out = []
+    try:
+        fh = open(path, "rb")
+    except OSError:
+        return out
+    with fh:
+        fh.seek(0, os.SEEK_END)
+        pos, tail, scanned = fh.tell(), b"", 0
+        while pos > 0 and scanned < CHOICE_SCAN_BYTES:
+            step = min(1 << 20, pos)
+            pos -= step
+            scanned += step
+            fh.seek(pos)
+            lines = (fh.read(step) + tail).split(b"\n")
+            tail = lines[0] if pos > 0 else b""
+            for raw in reversed(lines[1:] if pos > 0 else lines):
+                if b'"answers"' not in raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except ValueError:
+                    continue
+                result = obj.get("toolUseResult")
+                answers = result.get("answers") if isinstance(result, dict) else None
+                if obj.get("type") != "user" or obj.get("isSidechain") or not isinstance(answers, dict):
+                    continue
+                ms = _iso_ms(obj.get("timestamp"))
+                text = clean(" / ".join(str(a) for a in answers.values() if str(a).strip()))
+                if ms is None or not text:
+                    continue
+                if ms < oldest_ms:
+                    return out
+                out.append((ms, text))
+                if len(out) >= limit:
+                    return out
+    return out
+
+
+def with_choices(entries, count, session=None):
+    """`entries` (newest first) with the session's choice-box answers merged in
+    by time and cut back to `count`. Answers become pseudo entries flagged
+    `choice`. Sessions: `session` if given, else the newest ones in `entries`."""
+    if not CHOICES_ENABLED:
+        return entries
+    sessions = [session] if session else []
+    for obj in entries:
+        sid = obj.get("sessionId")
+        if sid not in sessions and len(sessions) < CHOICE_SESSIONS:
+            sessions.append(sid)
+    oldest = (entries[-1].get("timestamp") or 0) if len(entries) >= count else 0
+    merged = list(entries)
+    for sid in sessions:
+        path = find_transcript(sid)
+        if not path:
+            continue
+        for ms, text in transcript_choices(path, oldest, count):
+            merged.append({"display": text, "timestamp": ms, "sessionId": sid,
+                           "choice": True})
+    merged.sort(key=lambda o: o.get("timestamp") or 0, reverse=True)
+    return merged[:count]
+
+
 def display_text(obj, summary=""):
     """Replace `[Pasted text #N +M lines]` with a paste preview or "[paste]".
 
@@ -467,8 +542,8 @@ def collect(start, count, session=None):
     found = scan_back(cands, count, session)
     for cand in cands:
         if found.get(cand):
-            return found[cand]
-    return []
+            return with_choices(found[cand], count, session)
+    return with_choices([], count, session) if session else []
 
 
 def build_cells(entries):
@@ -476,6 +551,9 @@ def build_cells(entries):
     cells = []
     summaries = agent_summaries(entries) if PASTE_ENABLED else {}
     for obj in entries:
+        if obj.get("choice"):
+            cells.append((CHOICE_MARK + clean(obj["display"]), rel_age(obj.get("timestamp"))))
+            continue
         if is_noise(obj.get("display")):
             continue
         summary = summaries.get((obj.get("sessionId"), obj.get("timestamp") or 0), "")

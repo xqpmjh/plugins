@@ -92,6 +92,7 @@ Set environment variables in the shell that launches Claude Code:
 |---|---|---|
 | `CLAUDE_HISTORY_LANG` | `en` | `en` or `zh` age labels |
 | `CLAUDE_HISTORY_PASTE` | off | `1` to show the agent's reply line, or the paste's first line, for pasted text |
+| `CLAUDE_HISTORY_CHOICES` | on | `0` to hide choice-box answers (read from the session transcript) |
 | `CLAUDE_HISTORY_SCOPE` | directory | `session` to list only the running session's prompts |
 | `CLAUDE_HISTORY_WIDTH` | auto | Force a width in terminal cells |
 | `CLAUDE_HISTORY_STYLE` | italic blue | ANSI style for history cells |
@@ -109,7 +110,7 @@ telemetry.
 |---|---|---|
 | `~/.claude/history.jsonl` | every render | the prompts shown in the bar |
 | `~/.claude/paste-cache/<hash>.txt` | only with `CLAUDE_HISTORY_PASTE=1` | paste preview |
-| `~/.claude/projects/*/<session>.jsonl` | only with `CLAUDE_HISTORY_PASTE=1` | the agent's first reply line to a paste |
+| `~/.claude/projects/*/<session>.jsonl` | every render, unless `CLAUDE_HISTORY_CHOICES=0`; also with `CLAUDE_HISTORY_PASTE=1` | choice-box answers (last 4 MiB scanned); with the paste preview, the agent's first reply line to a paste |
 | `~/.claude/settings.json` | install/uninstall only | register/remove `statusLine` |
 | `git -C <project> rev-parse` | every render | branch name on the left |
 
@@ -148,6 +149,12 @@ reply to it, read from the session transcript (`<config>/projects/*/<session>.js
 and paired with the prompt by time; Markdown markers are removed. Until the agent
 has written text, or when the transcript is missing, the preview is the first line
 of the pasted content.
+
+Answers picked in a choice box (`AskUserQuestion`) are not typed prompts and are
+absent from `history.jsonl`. The bar reads them from the session transcript's
+`toolUseResult.answers` and lists them in time order, marked `↳`; answers to
+several questions in one box are joined with ` / `. A rejected box has no
+answer and is not shown. Set `CLAUDE_HISTORY_CHOICES=0` to turn this off.
 
 When the pasted content is the preview, and its first line
 looks like a shell prompt (`[user@host dir]$ ...`, `user@host ~ % ...`,

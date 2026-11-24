@@ -80,9 +80,10 @@ directory has no entries, it tries parent directories up to four levels. Bash
 commands (`!...`), UI-setting commands (`/effort`, `/model`, ...), and exit
 words are filtered out.
 
-The status line reads `<config>/history.jsonl` locally. Paste previews are
-opt-in and read `<config>/paste-cache` and the session transcript
-`<config>/projects/*/<session>.jsonl` (the agent's reply line); by default a paste is shown as
+The status line reads `<config>/history.jsonl` locally, plus the tail of the
+session transcript `<config>/projects/*/<session>.jsonl` for choice-box answers
+(`CLAUDE_HISTORY_CHOICES=0` turns this off). Paste previews are opt-in and read
+`<config>/paste-cache` and the transcript (the agent's reply line); by default a paste is shown as
 `[paste]`. There are no network calls, hooks, telemetry, MCP servers, or
 background processes. Installation writes one `statusLine` key to
 `settings.json`, after backing the file up; uninstall removes only that key.
@@ -93,8 +94,9 @@ background processes. Installation writes one `statusLine` key to
 - **Hooks:** none.
 - **Telemetry / analytics:** none.
 - **Data read at runtime:** `<config>/history.jsonl` (the prompts displayed),
-  optional `<config>/paste-cache` and session transcript
-  `<config>/projects/*/<session>.jsonl` when `CLAUDE_HISTORY_PASTE=1`, and the git
+  the tail of the session transcript `<config>/projects/*/<session>.jsonl`
+  (choice-box answers; off with `CLAUDE_HISTORY_CHOICES=0`, and the agent's reply
+  line when `CLAUDE_HISTORY_PASTE=1`), optional `<config>/paste-cache`, and the git
   branch via `git -C <project> rev-parse`.
 - **Data written:** `<config>/statusline/prompt-history-bar/` (the runtime copy)
   and the `statusLine` entry in `<config>/settings.json`, only when the user runs

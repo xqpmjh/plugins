@@ -77,6 +77,7 @@ Set these in the environment that launches Claude Code (for example
 |---|---|
 | `CLAUDE_HISTORY_LANG` | `en` (default) or `zh` |
 | `CLAUDE_HISTORY_PASTE` | `1` to show the agent's reply line, or the paste's first line |
+| `CLAUDE_HISTORY_CHOICES` | `0` to hide choice-box answers (default: shown) |
 | `CLAUDE_HISTORY_SCOPE` | `session` to list only the running session's prompts (default: whole directory) |
 | `CLAUDE_HISTORY_WIDTH` | Force a terminal width in cells |
 | `CLAUDE_HISTORY_STYLE` | ANSI style for the history cells |
@@ -117,9 +118,10 @@ running elsewhere.
 The script reads only local files:
 
 - `<config>/history.jsonl` — the prompt history it displays.
-- `<config>/paste-cache/<hash>.txt` and `<config>/projects/*/<session>.jsonl` (the
-  session transcript, for the agent's reply line) — only when
-  `CLAUDE_HISTORY_PASTE=1`.
+- `<config>/projects/*/<session>.jsonl` (the session transcript) — choice-box
+  answers on every render unless `CLAUDE_HISTORY_CHOICES=0`, and the agent's reply
+  line when `CLAUDE_HISTORY_PASTE=1`.
+- `<config>/paste-cache/<hash>.txt` — only when `CLAUDE_HISTORY_PASTE=1`.
 - Git branch via `git -C <project> rev-parse` for the left column.
 
 Nothing is uploaded. The history column displays prompt text on screen, so be
@@ -153,6 +155,12 @@ and paired with the prompt by time; Markdown markers are removed. Until the agen
 has written text, or when the transcript is missing, the preview is the first line
 of the pasted content.
 
+Answers picked in a choice box (`AskUserQuestion`) are not typed prompts and are
+absent from `history.jsonl`. The bar reads them from the session transcript's
+`toolUseResult.answers` and lists them in time order, marked `↳`; answers to
+several questions in one box are joined with ` / `. A rejected box has no
+answer and is not shown. Set `CLAUDE_HISTORY_CHOICES=0` to turn this off.
+
 When the pasted content is the preview, and its first line
 looks like a shell prompt (`[user@host dir]$ ...`, `user@host ~ % ...`,
 `(base) user@host:~$ ...`, `PS C:\> ...`, or a Starship module line such as
@@ -167,14 +175,3 @@ and takes the remaining width. A long prompt wraps onto spare rows of its column
 and is cut with `…` only when the rows run out. If the pane is too narrow it
 falls back to one column, then to the left column alone rather than
 overflowing.
-
-## Development
-
-Run the dependency-free checks with a throwaway HOME:
-
-```bash
-bash tests/run-tests.sh
-```
-
-The tests cover rendering, language labels, paste privacy, install, reinstall,
-force replacement, uninstall, and syntax.

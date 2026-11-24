@@ -390,6 +390,55 @@ check "typed text stays before the reply preview" 'printf "%s" "$SM_ON" | grep -
 check "reply lines are not read with the preview off" '! printf "%s" "$SM_OFF" | grep -q "结论"'
 
 
+# Choice-box (AskUserQuestion) answers are not in history.jsonl; they come from
+# the session transcript, merged by time and marked with "↳".
+CH="$WORK/choices"
+CSID="choice-session-0001"
+mkdir -p "$CH" "$CONFIG/projects/choice"
+python3 - "$CONFIG" "$CH" "$CSID" <<'PY'
+import json
+import sys
+import time
+from datetime import datetime, timezone
+
+config, proj, sid = sys.argv[1:4]
+now = int(time.time() * 1000)
+
+
+def iso(ms):
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def result(ms, answers, **extra):
+    rec = {"type": "user", "sessionId": sid, "timestamp": iso(ms),
+           "message": {"content": [{"type": "tool_result"}]},
+           "toolUseResult": {"questions": [], "answers": answers}}
+    rec.update(extra)
+    return rec
+
+
+with open(config + "/history.jsonl", "a", encoding="utf-8") as fh:
+    for ts, text in ((now - 5000, "before the question"), (now - 1000, "after the answer")):
+        fh.write(json.dumps({"display": text, "project": proj, "sessionId": sid,
+                             "timestamp": ts, "pastedContents": {}}) + "\n")
+with open(config + "/projects/choice/" + sid + ".jsonl", "w", encoding="utf-8") as fh:
+    fh.write(json.dumps(result(now - 9000, {"q0": "too old answer"}), ensure_ascii=False) + "\n")
+    fh.write(json.dumps(result(now - 3000, {"q1": "全部应用（推荐）", "q2": "先不改"}), ensure_ascii=False) + "\n")
+    fh.write(json.dumps({"type": "user", "sessionId": sid, "timestamp": iso(now - 2500),
+                         "message": {"content": [{"type": "tool_result", "is_error": True}]},
+                         "toolUseResult": "Error: rejected"}) + "\n")
+    fh.write(json.dumps(result(now - 2000, {"q3": "sidechain answer"}, isSidechain=True)) + "\n")
+PY
+CH_ON="$(python3 "$SCRIPTS/history_bar.py" "$CH" 2)"
+CH_ALL="$(python3 "$SCRIPTS/history_bar.py" "$CH" 10)"
+CH_OFF="$(CLAUDE_HISTORY_CHOICES=0 python3 "$SCRIPTS/history_bar.py" "$CH" 10)"
+check "a choice-box answer is shown, joined across questions" 'printf "%s" "$CH_ALL" | grep -q "↳ 全部应用（推荐） / 先不改"'
+check "choice answers sit between prompts by time" 'printf "%s" "$CH_ALL" | grep -q "after the answer.*↳ 全部应用.*before the question"'
+check "a rejected question and a sidechain answer are not shown" '! printf "%s" "$CH_ALL" | grep -q "sidechain answer\|rejected"'
+check "choice answers count toward the entry limit" '! printf "%s" "$CH_ON" | grep -q "before the question" && printf "%s" "$CH_ON" | grep -q "↳ 全部应用"'
+check "CLAUDE_HISTORY_CHOICES=0 hides choice answers" '! printf "%s" "$CH_OFF" | grep -q "↳"'
+
+
 # A long prompt wraps onto spare rows of the column and is cut with "…" only
 # when the rows run out; the age stays at the end of the last line.
 WRAP="$(python3 - "$SCRIPTS/history_bar.py" <<'PY'
