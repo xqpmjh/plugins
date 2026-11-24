@@ -152,9 +152,11 @@ of the pasted content.
 
 Answers picked in a choice box (`AskUserQuestion`) are not typed prompts and are
 absent from `history.jsonl`. The bar reads them from the session transcript's
-`toolUseResult.answers` and lists them in time order, marked `↳`; answers to
-several questions in one box are joined with ` / `. A rejected box has no
-answer and is not shown. Set `CLAUDE_HISTORY_CHOICES=0` to turn this off.
+`toolUseResult.answers` and lists them in time order, marked `↳`, as
+`question → answer` (the question is cut to 16 cells so the answer stays
+visible, and a trailing "(Recommended)" tag is dropped); several questions in
+one box are joined with ` / `. A rejected box has no answer and is not shown.
+Set `CLAUDE_HISTORY_CHOICES=0` to turn this off.
 
 When the pasted content is the preview, and its first line
 looks like a shell prompt (`[user@host dir]$ ...`, `user@host ~ % ...`,

@@ -423,7 +423,7 @@ with open(config + "/history.jsonl", "a", encoding="utf-8") as fh:
                              "timestamp": ts, "pastedContents": {}}) + "\n")
 with open(config + "/projects/choice/" + sid + ".jsonl", "w", encoding="utf-8") as fh:
     fh.write(json.dumps(result(now - 9000, {"q0": "too old answer"}), ensure_ascii=False) + "\n")
-    fh.write(json.dumps(result(now - 3000, {"q1": "全部应用（推荐）", "q2": "先不改"}), ensure_ascii=False) + "\n")
+    fh.write(json.dumps(result(now - 3000, {"应用全部？": "全部应用（推荐）", "Should we also rewrite the whole module?": "先不改"}), ensure_ascii=False) + "\n")
     fh.write(json.dumps({"type": "user", "sessionId": sid, "timestamp": iso(now - 2500),
                          "message": {"content": [{"type": "tool_result", "is_error": True}]},
                          "toolUseResult": "Error: rejected"}) + "\n")
@@ -432,10 +432,11 @@ PY
 CH_ON="$(python3 "$SCRIPTS/history_bar.py" "$CH" 2)"
 CH_ALL="$(python3 "$SCRIPTS/history_bar.py" "$CH" 10)"
 CH_OFF="$(CLAUDE_HISTORY_CHOICES=0 python3 "$SCRIPTS/history_bar.py" "$CH" 10)"
-check "a choice-box answer is shown, joined across questions" 'printf "%s" "$CH_ALL" | grep -q "↳ 全部应用（推荐） / 先不改"'
-check "choice answers sit between prompts by time" 'printf "%s" "$CH_ALL" | grep -q "after the answer.*↳ 全部应用.*before the question"'
+check "a choice-box shows question → answer, joined across questions, without the recommended tag" 'printf "%s" "$CH_ALL" | grep -q "↳ 应用全部 → 全部应用 / "'
+check "a long question is cut so the answer stays" 'printf "%s" "$CH_ALL" | grep -q "Should we also … → 先不改"'
+check "choice answers sit between prompts by time" 'printf "%s" "$CH_ALL" | grep -q "after the answer.*↳ .* → 全部应用.*before the question"'
 check "a rejected question and a sidechain answer are not shown" '! printf "%s" "$CH_ALL" | grep -q "sidechain answer\|rejected"'
-check "choice answers count toward the entry limit" '! printf "%s" "$CH_ON" | grep -q "before the question" && printf "%s" "$CH_ON" | grep -q "↳ 全部应用"'
+check "choice answers count toward the entry limit" '! printf "%s" "$CH_ON" | grep -q "before the question" && printf "%s" "$CH_ON" | grep -q "→ 全部应用"'
 check "CLAUDE_HISTORY_CHOICES=0 hides choice answers" '! printf "%s" "$CH_OFF" | grep -q "↳"'
 
 

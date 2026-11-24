@@ -306,10 +306,29 @@ def agent_summaries(entries):
 CHOICE_MARK = "↳ "
 CHOICE_SCAN_BYTES = 4 << 20
 CHOICE_SESSIONS = 3
+CHOICE_QUESTION_W = 16
+RECOMMENDED = re.compile(r"\s*[（(](?:推荐|recommended)[）)]\s*$", re.I)
+
+
+def choice_text(answers):
+    """`question → answer` per answered question, joined by " / ". The question
+    is cut to CHOICE_QUESTION_W cells so the answer survives a narrow column;
+    a trailing "(Recommended)" tag on the answer is dropped."""
+    parts = []
+    for question, answer in answers.items():
+        answer = RECOMMENDED.sub("", clean(str(answer)))
+        if not answer:
+            continue
+        question = clean(str(question)).rstrip("？?：: ")
+        if text_width(question) > CHOICE_QUESTION_W:
+            question = fit(question, CHOICE_QUESTION_W - 1) + "…"
+        parts.append(f"{question} → {answer}" if question else answer)
+    return " / ".join(parts)
 
 
 def transcript_choices(path, oldest_ms, limit):
-    """[(time in ms, answer text)] of AskUserQuestion answers, newest first.
+    """[(time in ms, "question → answer" text)] of AskUserQuestion answers,
+    newest first.
 
     A choice-box answer is a user reply that history.jsonl never records; it
     exists only as a tool result with `toolUseResult.answers` in the session
@@ -342,7 +361,7 @@ def transcript_choices(path, oldest_ms, limit):
                 if obj.get("type") != "user" or obj.get("isSidechain") or not isinstance(answers, dict):
                     continue
                 ms = _iso_ms(obj.get("timestamp"))
-                text = clean(" / ".join(str(a) for a in answers.values() if str(a).strip()))
+                text = choice_text(answers)
                 if ms is None or not text:
                     continue
                 if ms < oldest_ms:
