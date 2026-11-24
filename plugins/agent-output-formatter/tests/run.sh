@@ -59,14 +59,14 @@ o=$(hook UserPromptSubmit $S "/aofx");           expect_empty "/aofx" "$o"
 o=$(hook UserPromptSubmit $S "/aof bogus");      expect_contains "bogus" "$o" "Unrecognised"; expect_eq "bogus state" "$(state_of $S state)" off
 o=$(hook UserPromptSubmit $S "/aof status");     expect_contains "status" "$o" "Session state: off"
 
-# --- reminder only while on --------------------------------------------------
+# --- ordinary prompts stay silent ---------------------------------------------
 o=$(hook UserPromptSubmit $S "hello");           expect_empty "plain prompt while off" "$o"
 hook UserPromptSubmit $S "/aof on" >/dev/null
-o=$(hook UserPromptSubmit $S "hello");           expect_contains "plain prompt while on" "$o" "Session state: on"; expect_absent "reminder no contract" "$o" "输出契约"
+o=$(hook UserPromptSubmit $S "hello");           expect_empty "plain prompt while on" "$o"
 
 # --- html sub-mode -----------------------------------------------------------
 o=$(hook UserPromptSubmit $S "/aof html on");    expect_contains "html on" "$o" "HTML 子模式"; expect_contains "html template path" "$o" "templates/page.html"; expect_absent "html placeholder replaced" "$o" "{{TEMPLATE}}"
-o=$(hook UserPromptSubmit $S "hello");           expect_contains "reminder html" "$o" "HTML sub-mode is on"
+o=$(hook UserPromptSubmit $S "hello");           expect_empty "plain prompt with html on" "$o"
 o=$(hook UserPromptSubmit $S "/aof html off");   expect_eq "html off" "$(state_of $S html)" off
 reset_state
 o=$(hook UserPromptSubmit $S "/aof html on");    expect_contains "html on from off brings contract" "$o" "输出契约"; expect_eq "html on from off state" "$(state_of $S state)" on

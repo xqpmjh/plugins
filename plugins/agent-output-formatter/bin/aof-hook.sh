@@ -29,7 +29,6 @@ CONFIG="${AOF_HOME}/config"
 SESS_DIR="${AOF_HOME}/sessions"
 CONTRACT="${ROOT}/rules/contract.md"
 HTML_RULES="${ROOT}/rules/html.md"
-REMINDER="${ROOT}/rules/reminder.txt"
 TEMPLATE="${ROOT}/templates/page.html"
 
 dbg() {
@@ -50,7 +49,7 @@ if [ "$valid_sid" = 1 ]; then dbg "event=${event} sid=${sid}"; else dbg "event=$
 
 # All rule files must be present; otherwise aof stays silent (no state change).
 rules_ok=0
-[ -r "$CONTRACT" ] && [ -r "$HTML_RULES" ] && [ -r "$REMINDER" ] && rules_ok=1
+[ -r "$CONTRACT" ] && [ -r "$HTML_RULES" ] && rules_ok=1
 
 # --- small helpers ---------------------------------------------------------
 
@@ -129,14 +128,7 @@ $(html_rules)"
   printf '%s' "$out"
 }
 
-reminder_block() {
-  local out
-  out="$(cat "$REMINDER" 2>/dev/null)"
-  [ "$st_html" = "on" ] && out="${out} HTML sub-mode is on (rules in the aof HTML block)."
-  printf '%s' "$out"
-}
-
-OFF_TEXT="[aof] The user switched aof off for this session. The aof output contract, aof HTML rules and aof reminders earlier in this conversation no longer apply; replies follow the user's normal instructions only."
+OFF_TEXT="[aof] The user switched aof off for this session. The aof output contract and aof HTML rules earlier in this conversation no longer apply; replies follow the user's normal instructions only."
 
 USAGE="[aof] Unrecognised argument; nothing was changed. Usage: /aof [on|off|status|auto on|auto off|html on|html off]."
 
@@ -206,12 +198,10 @@ handle_prompt() {
   dbg "prompt parsed=${parsed}"
 
   if [ "${parsed#CMD:}" = "$parsed" ]; then
-    # Ordinary prompt: remind only while on. Touch the state file so an active
-    # session is not aged out by the 14-day cleanup.
+    # Ordinary prompt: no output. Touch the state file so an active session is
+    # not aged out by the 14-day cleanup.
     [ "$valid_sid" = 1 ] && [ "$rules_ok" = 1 ] || exit 0
     [ -f "$SESS_FILE" ] && touch "$SESS_FILE" 2>/dev/null
-    load_state
-    [ "$st_state" = on ] && emit "$(reminder_block)"
     exit 0
   fi
 

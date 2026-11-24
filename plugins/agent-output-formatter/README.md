@@ -34,7 +34,7 @@ Arguments are case-insensitive and may be separated by full-width spaces. Only a
 
 `bin/aof-hook.sh` is the only component that changes state. It runs for two events:
 
-- **UserPromptSubmit.** It parses the raw `/aof …` text before the skill expands and writes the state. It then injects the result: a one-line state summary, plus the contract when aof turns on. On ordinary prompts it injects a short reminder while aof is on.
+- **UserPromptSubmit.** It parses the raw `/aof …` text before the skill expands and writes the state. It then injects the result: a one-line state summary, plus the contract when aof turns on. Ordinary prompts get no injection.
 - **SessionStart.** On startup, clear or fork it applies auto-start. On compact it re-injects the contract. On resume it applies auto-start only when the session has no state file yet and auto is on; otherwise it injects nothing, because the contract is already in the transcript.
 
 The skill body only asks the model to report the hook's `[aof]` block. If that block is missing, the model must say the toggle failed rather than claim a state.
@@ -56,7 +56,6 @@ The HTML sub-mode writes self-contained pages from `templates/page.html` to `/tm
 
 - `/clear`, `/branch` and `--fork-session` start a new session_id. Manual aof state does not carry over; auto-start does.
 - Subagents do not receive the contract. The main loop applies it when relaying their output.
-- On `--resume`, earlier reminders are replayed from the transcript as-is.
 - Not yet verified in a real session:
   - that a symlinked folder under `~/.claude/skills/` loads as a plugin (the docs confirm symlinked skill folders, not symlinked plugin folders; if it doesn't load, move the folder there instead);
   - that the hook's `prompt` field holds the raw `/aof …` text;

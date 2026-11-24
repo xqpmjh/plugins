@@ -26,7 +26,7 @@ Install (user-run; the sandbox cannot write `~/.claude/skills`): `ln -s ~/Codes/
 
 `bin/aof-hook.sh` is the only component that holds logic or changes state. `hooks/hooks.json` wires it to two events:
 
-- **UserPromptSubmit.** `parse_command` (jq) matches only a whole single-line `/aof …` or `/aof:aof …` prompt, before the skill expands. It writes state and emits `additionalContext`: a state summary, plus the contract on an off→on transition. On ordinary prompts it emits `rules/reminder.txt` while the session is on.
+- **UserPromptSubmit.** `parse_command` (jq) matches only a whole single-line `/aof …` or `/aof:aof …` prompt, before the skill expands. It writes state and emits `additionalContext`: a state summary, plus the contract on an off→on transition. On ordinary prompts it emits nothing and only refreshes the state file's mtime.
 - **SessionStart.** `startup|clear|fork` apply auto-start. `resume` applies it only when the session has no state file yet and auto=on; otherwise it injects nothing, because the contract is already in the transcript. `compact` re-injects the contract. This event also deletes session files idle for more than 14 days, never the current session's own file.
 
 `SKILL.md` (at the plugin root, so it is invoked as `/aof`) holds no rules. It only tells the model to report the hook's `[aof]` block, and to say the toggle failed if the block is absent. Rules are injected through the hook only, so that compaction cannot leave two copies.
@@ -45,7 +45,7 @@ Env flags: `AOF_DISABLE=1` (silent no-op, for `claude -p` evals), `AOF_DEBUG=1` 
 
 ## Rule files
 
-- `rules/contract.md`: the strict layer. It states that the baseline is the global CLAUDE.md 「中文表达」 and contains only rules stricter than that baseline; do not duplicate baseline rules into it.
+- `rules/contract.md`: the strict layer. It states that the baseline is the global CLAUDE.md 「中文表达」 and contains only rules stricter than that baseline; do not duplicate baseline rules into it. Items 5–11 are adapted from 《中文技术表达规范》C01–C24 and carlstack《中文技術寫作借用 STE》, rewritten in the author's own words.
 - `rules/html.md`: HTML sub-mode. Pages go to `/tmp/claude/aof/pages/` via a quoted heredoc. They must not use `open`, which the sandbox blocks, and must not contain `<script>` or event attributes.
 - Deliberately excluded: sentence-length lint, word lists, and any claim of ASD-STE100 compliance (the source spec calls fixed thresholds "假精确").
 
