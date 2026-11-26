@@ -213,6 +213,18 @@ PY
 )"
 check "prompt shapes are recognised without over-matching" '[ "$SHAPES" = "ok" ]'
 
+STRAY="$(python3 - "$SCRIPTS" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import history_bar as hb
+junk = ["`", "1", "12", "..", " ` "]
+real = ["y", "ok", "是", "好", "/x", "/ls", "go on", "123"]
+bad = [t for t in junk if not hb.is_noise(t)] + [t for t in real if hb.is_noise(t)]
+print("ok" if not bad else repr(bad))
+PY
+)"
+check "stray 1-2 character inputs without letters are noise" '[ "$STRAY" = "ok" ]'
+
 # An input that is only a paste takes a slot only as the preview line; image-only
 # inputs are skipped
 # and image placeholders are stripped from entries that also have text.
@@ -438,6 +450,69 @@ check "choice answers sit between prompts by time" 'printf "%s" "$CH_ALL" | grep
 check "a rejected question and a sidechain answer are not shown" '! printf "%s" "$CH_ALL" | grep -q "sidechain answer\|rejected"'
 check "choice answers count toward the entry limit" '! printf "%s" "$CH_ON" | grep -q "before the question" && printf "%s" "$CH_ON" | grep -q "→ 全部应用"'
 check "CLAUDE_HISTORY_CHOICES=0 hides choice answers" '! printf "%s" "$CH_OFF" | grep -q "↳"'
+
+# A prompt cancelled with Esc before the agent wrote text or called a tool is
+# dropped; an interrupt after any agent work, or a rejected tool call, is not.
+CX="$WORK/cancelled"
+XSID="cancel-session-0001"
+mkdir -p "$CX" "$CONFIG/projects/cancel"
+python3 - "$CONFIG" "$CX" "$XSID" <<'PY'
+import json
+import sys
+import time
+from datetime import datetime, timezone
+
+config, proj, sid = sys.argv[1:4]
+now = int(time.time() * 1000)
+
+
+def iso(ms):
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def user(ms, text, **extra):
+    rec = {"type": "user", "sessionId": sid, "timestamp": iso(ms),
+           "message": {"content": [{"type": "text", "text": text}]}}
+    rec.update(extra)
+    return rec
+
+
+def agent(ms, block):
+    return {"type": "assistant", "sessionId": sid, "timestamp": iso(ms),
+            "message": {"content": [block]}}
+
+
+prompts = [(now - 80000, "cancelled at once"), (now - 60000, "cancelled after tool"),
+           (now - 40000, "tool rejected"), (now - 20000, "answered normally")]
+with open(config + "/history.jsonl", "a", encoding="utf-8") as fh:
+    for ts, text in prompts:
+        fh.write(json.dumps({"display": text, "project": proj, "sessionId": sid,
+                             "timestamp": ts, "pastedContents": {}}) + "\n")
+recs = []
+for ts, text in prompts:
+    recs.append(user(ts + 300, text, promptSource="typed"))
+    if text == "cancelled at once":
+        recs.append(agent(ts + 900, {"type": "thinking", "thinking": "..."}))
+        recs.append(user(ts + 2000, "[Request interrupted by user]"))
+    elif text == "cancelled after tool":
+        recs.append(agent(ts + 900, {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}))
+        recs.append(user(ts + 2000, "[Request interrupted by user]"))
+    elif text == "tool rejected":
+        recs.append(agent(ts + 900, {"type": "text", "text": "running it"}))
+        recs.append(user(ts + 2000, "[Request interrupted by user for tool use]"))
+    else:
+        recs.append(agent(ts + 900, {"type": "text", "text": "done"}))
+with open(config + "/projects/cancel/" + sid + ".jsonl", "w", encoding="utf-8") as fh:
+    for rec in recs:
+        fh.write(json.dumps(rec) + "\n")
+PY
+CX_ON="$(python3 "$SCRIPTS/history_bar.py" "$CX" 10)"
+CX_OFF="$(CLAUDE_HISTORY_CANCELLED=0 python3 "$SCRIPTS/history_bar.py" "$CX" 10)"
+check "a prompt cancelled before any agent work is dropped" '! printf "%s" "$CX_ON" | grep -q "cancelled at once"'
+check "a prompt interrupted after a tool call stays" 'printf "%s" "$CX_ON" | grep -q "cancelled after tool"'
+check "a rejected tool call does not drop its prompt" 'printf "%s" "$CX_ON" | grep -q "tool rejected"'
+check "an answered prompt stays" 'printf "%s" "$CX_ON" | grep -q "answered normally"'
+check "CLAUDE_HISTORY_CANCELLED=0 keeps cancelled prompts" 'printf "%s" "$CX_OFF" | grep -q "cancelled at once"'
 
 
 # A long prompt wraps onto spare rows of the column and is cut with "…" only

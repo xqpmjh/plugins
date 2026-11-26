@@ -78,6 +78,7 @@ Set these in the environment that launches Claude Code (for example
 | `CLAUDE_HISTORY_LANG` | `en` (default) or `zh` |
 | `CLAUDE_HISTORY_PASTE` | `1` to show the agent's reply line, or the paste's first line |
 | `CLAUDE_HISTORY_CHOICES` | `0` to hide choice-box answers (default: shown) |
+| `CLAUDE_HISTORY_CANCELLED` | `0` to keep prompts cancelled with Esc before the agent answered (default: hidden) |
 | `CLAUDE_HISTORY_SCOPE` | `session` to list only the running session's prompts (default: whole directory) |
 | `CLAUDE_HISTORY_WIDTH` | Force a terminal width in cells |
 | `CLAUDE_HISTORY_STYLE` | ANSI style for the history cells |
@@ -119,7 +120,8 @@ The script reads only local files:
 
 - `<config>/history.jsonl` — the prompt history it displays.
 - `<config>/projects/*/<session>.jsonl` (the session transcript) — choice-box
-  answers on every render unless `CLAUDE_HISTORY_CHOICES=0`, and the agent's reply
+  answers and Esc-cancelled prompts on every render unless both
+  `CLAUDE_HISTORY_CHOICES=0` and `CLAUDE_HISTORY_CANCELLED=0`, and the agent's reply
   line when `CLAUDE_HISTORY_PASTE=1`.
 - `<config>/paste-cache/<hash>.txt` — only when `CLAUDE_HISTORY_PASTE=1`.
 - Git branch via `git -C <project> rev-parse` for the left column.
@@ -135,7 +137,8 @@ and calls `history_bar.render_statusline`. The history reader scans
 entries for the current project, so its cost does not grow with the file size.
 It accepts both the logical project path and its realpath, tries parents up to
 the git root (four levels at most; none when there is no `.git`), and ignores bash-mode inputs (`!...`), UI commands (`/effort`,
-`/model`, ...), exit words, and inputs that are only image
+`/model`, ...), exit words, stray inputs of at most two characters with no
+letters (`` ` ``, `1`), and inputs that are only image
 placeholders (an input that is only a paste is shown as its first line with the
 preview on, and skipped otherwise; `[Image #N]` is dropped from entries that also have text, along
 with the separators and invisible characters left at the front, such as the `，`
@@ -162,6 +165,14 @@ absent from `history.jsonl`. The bar reads them from the session transcript's
 visible, and a trailing "(Recommended)" tag is dropped); several questions in
 one box are joined with ` / `. A rejected box has no answer and is not shown.
 Set `CLAUDE_HISTORY_CHOICES=0` to turn this off.
+
+A prompt cancelled with Esc before the agent wrote any text or called a tool
+is not shown either: the transcript records an `[Request interrupted by user]`
+turn right after it and no agent work in between. An interrupt after the agent
+has started (a reply or a tool call), or a rejected tool call, keeps the
+prompt, since the question was real. Set `CLAUDE_HISTORY_CANCELLED=0` to keep
+cancelled prompts. Only the newest three sessions in the list are checked, and
+the last 4 MiB of each transcript.
 
 When the pasted content is the preview, and its first line
 looks like a shell prompt (`[user@host dir]$ ...`, `user@host ~ % ...`,

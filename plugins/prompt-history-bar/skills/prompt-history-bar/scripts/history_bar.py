@@ -32,6 +32,7 @@ HIST = os.path.join(CONFIG_DIR, "history.jsonl")
 PASTE_CACHE = os.path.join(CONFIG_DIR, "paste-cache")
 PASTE_ENABLED = os.environ.get("CLAUDE_HISTORY_PASTE", "").lower() in ("1", "true", "yes")
 CHOICES_ENABLED = os.environ.get("CLAUDE_HISTORY_CHOICES", "1").lower() not in ("0", "false", "no")
+CANCELLED_HIDDEN = os.environ.get("CLAUDE_HISTORY_CANCELLED", "1").lower() not in ("0", "false", "no")
 LANG = os.environ.get("CLAUDE_HISTORY_LANG", "en").lower()
 # "session" limits the column to the prompts of the running Claude session, so
 # two sessions in one directory do not show each other's history.
@@ -396,6 +397,99 @@ def with_choices(entries, count, session=None):
     return merged[:count]
 
 
+INTERRUPT = "[Request interrupted by user]"
+
+
+def _turn_text(obj):
+    content = (obj.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(str(b.get("text") or "") for b in content
+                       if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
+def _did_work(obj):
+    """True when an assistant record has reply text or a tool call."""
+    content = (obj.get("message") or {}).get("content")
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") in ("text", "tool_use") for b in content)
+
+
+def transcript_cancelled(path, oldest_ms):
+    """Times in ms of typed prompts that were cancelled with Esc before the agent
+    wrote any text or called any tool.
+
+    The transcript has no link from an interrupt to its prompt, so it is read
+    backwards: an interrupt record arms the check, assistant records with text
+    or a tool call disarm it, and the next typed prompt reached while still
+    armed was cancelled. Stops at a prompt older than `oldest_ms - PAIR_MS`.
+    The "for tool use" interrupt (a rejected tool call) is not a cancel."""
+    out, armed, worked = [], False, False
+    try:
+        fh = open(path, "rb")
+    except OSError:
+        return out
+    with fh:
+        fh.seek(0, os.SEEK_END)
+        pos, tail, scanned = fh.tell(), b"", 0
+        while pos > 0 and scanned < CHOICE_SCAN_BYTES:
+            step = min(1 << 20, pos)
+            pos -= step
+            scanned += step
+            fh.seek(pos)
+            lines = (fh.read(step) + tail).split(b"\n")
+            tail = lines[0] if pos > 0 else b""
+            for raw in reversed(lines[1:] if pos > 0 else lines):
+                if not TURN_LINE.search(raw):
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except ValueError:
+                    continue
+                if obj.get("isSidechain"):
+                    continue
+                if obj.get("type") == "assistant":
+                    worked = worked or _did_work(obj)
+                elif obj.get("promptSource") == "typed":
+                    ms = _iso_ms(obj.get("timestamp"))
+                    if ms is not None:
+                        if armed and not worked:
+                            out.append(ms)
+                        if ms < oldest_ms - PAIR_MS:
+                            return out
+                    armed = worked = False
+                elif _turn_text(obj).startswith(INTERRUPT):
+                    armed, worked = True, False
+    return out
+
+
+def drop_cancelled(entries):
+    """`entries` without the inputs the user cancelled with Esc right after
+    sending them. Looks at the newest CHOICE_SESSIONS sessions only; an entry
+    is matched to its transcript prompt by time (within PAIR_MS)."""
+    if not CANCELLED_HIDDEN or not entries:
+        return entries
+    sessions = []
+    for obj in entries:
+        sid = obj.get("sessionId")
+        if sid not in sessions and len(sessions) < CHOICE_SESSIONS:
+            sessions.append(sid)
+    oldest = min(o.get("timestamp") or 0 for o in entries)
+    gone = set()
+    for sid in sessions:
+        path = find_transcript(sid)
+        if not path:
+            continue
+        stamps = transcript_cancelled(path, oldest)
+        for idx, obj in enumerate(entries):
+            ts = obj.get("timestamp")
+            if obj.get("sessionId") == sid and ts and any(abs(ms - ts) <= PAIR_MS for ms in stamps):
+                gone.add(idx)
+    return [o for i, o in enumerate(entries) if i not in gone]
+
+
 def display_text(obj, summary=""):
     """Replace `[Pasted text #N +M lines]` with a paste preview or "[paste]".
 
@@ -419,7 +513,8 @@ def display_text(obj, summary=""):
 def is_noise(display):
     """Bash-mode inputs (`!...`), UI settings commands, and exit words are not
     conversation content and do not take a history slot. Neither does an input
-    that is only image placeholders. An input that is only a paste keeps its
+    that is only image placeholders, or a stray one- or two-character input
+    with no letters. An input that is only a paste keeps its
     slot here; build_cells() drops it when it would show only `[paste]`. The
     image placeholder is dropped in display_text()."""
     text = clean(str(display or ""))
@@ -431,6 +526,10 @@ def is_noise(display):
     if match and not stripped[match.end():].strip():
         return True
     if text.startswith("!"):
+        return True
+    # A stray keystroke or cancelled input ("`", "1", "..."): at most two
+    # characters and none of them a letter or CJK character.
+    if "[Pasted text" not in text and len(stripped) <= 2 and not any(c.isalpha() for c in stripped):
         return True
     if text in META_WORDS:
         return True
@@ -561,7 +660,7 @@ def collect(start, count, session=None):
     found = scan_back(cands, count, session)
     for cand in cands:
         if found.get(cand):
-            return with_choices(found[cand], count, session)
+            return with_choices(drop_cancelled(found[cand]), count, session)
     return with_choices([], count, session) if session else []
 
 
