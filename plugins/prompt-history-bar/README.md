@@ -132,7 +132,7 @@ entries for the current project, so cost does not grow with the file size. It
 matches both the logical project path and its realpath, tries parents up to
 the git root (four levels at most; none when there is no `.git`), and ignores bash-mode inputs (`!...`), UI commands (`/effort`,
 `/model`, ...), exit words, stray inputs of at most two characters with no
-letters (`` ` ``, `1`), and inputs that are only image
+letters (`` ` ``, `1`), bare shell commands (`ls`, `git status`), pasted `git status` / `ls -l` output, and inputs that are only image
 placeholders (an input that is only a paste is shown as its first line with the
 preview on, and skipped otherwise; `[Image #N]` is dropped from entries that also have text, along
 with the separators and invisible characters left at the front, such as the `，`

@@ -218,12 +218,21 @@ import sys
 sys.path.insert(0, sys.argv[1])
 import history_bar as hb
 junk = ["`", "1", "12", "..", " ` "]
-real = ["y", "ok", "是", "好", "/x", "/ls", "go on", "123"]
+real = ["y", "ok", "是", "好", "/x", "/ls", "go on", "123",
+        "git push the fix", "ls shows nothing, why", "On branch names: use dashes",
+        "total 5 items to review", "git status shows a conflict, help"]
+junk += ["ls", "pwd", "cd", "clear", "git diff", "git status -s", "git log --oneline",
+         "git push", "ls -la",
+         "On branch main Your branch is up to date",
+         "Untracked files: (use \"git add <file>...\" to include in what will be committed)",
+         "Changes not staged for commit: modified: a.py",
+         "total 48 drwxr-xr-x 2 a staff 64 Nov 1 x",
+         "-rw-r--r--@ 1 a staff 2.9K Nov 20 x"]
 bad = [t for t in junk if not hb.is_noise(t)] + [t for t in real if hb.is_noise(t)]
 print("ok" if not bad else repr(bad))
 PY
 )"
-check "stray 1-2 character inputs without letters are noise" '[ "$STRAY" = "ok" ]'
+check "stray characters, bare shell commands and pasted git status / ls -l output are noise" '[ "$STRAY" = "ok" ]'
 
 # An input that is only a paste takes a slot only as the preview line; image-only
 # inputs are skipped

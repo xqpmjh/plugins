@@ -90,6 +90,13 @@ PROMPT_TRANSCRIPT = re.compile(
 STARSHIP = re.compile(r"^[^\s]+ on\s+(?:[^\s❯➜]+\s+)*(?:➜|❯)\s")
 
 META_WORDS = {"exit", "quit"}
+# A shell command typed into the Claude prompt by mistake, with no text around it.
+BARE_SHELL = re.compile(
+    r"^(?:ls|pwd|cd|clear|git (?:status|diff|log|add|pull|push))(?:\s+-{1,2}[\w-]+)*$")
+# Output of `git status` or `ls -l`, pasted by itself, starts with one of these.
+SHELL_OUTPUT = re.compile(
+    r"^(?:On branch \S+(?:$|\s+(?:Your branch|Changes|Untracked|nothing|No commits|Unmerged))|Untracked files:|Changes (?:not staged|to be committed)\b"
+    r"|total \d+\s+[dl-][rwx-]{9}|[dl-][rwx-]{9}[@+]?\s)")
 # Built-ins that only change the UI or session state; their arguments are
 # settings values, not conversation content. Skill commands (/wrapup, ...)
 # are user intent and stay visible.
@@ -513,8 +520,9 @@ def display_text(obj, summary=""):
 def is_noise(display):
     """Bash-mode inputs (`!...`), UI settings commands, and exit words are not
     conversation content and do not take a history slot. Neither does an input
-    that is only image placeholders, or a stray one- or two-character input
-    with no letters. An input that is only a paste keeps its
+    that is only image placeholders, a stray one- or two-character input with
+    no letters, a bare shell command (`ls`, `git status`), or pasted
+    `git status` / `ls -l` output. An input that is only a paste keeps its
     slot here; build_cells() drops it when it would show only `[paste]`. The
     image placeholder is dropped in display_text()."""
     text = clean(str(display or ""))
@@ -531,7 +539,9 @@ def is_noise(display):
     # characters and none of them a letter or CJK character.
     if "[Pasted text" not in text and len(stripped) <= 2 and not any(c.isalpha() for c in stripped):
         return True
-    if text in META_WORDS:
+    if text in META_WORDS or BARE_SHELL.match(text):
+        return True
+    if "[Pasted text" not in text and SHELL_OUTPUT.match(text):
         return True
     words = text.split()
     if words[0] in UI_CMDS:
